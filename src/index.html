@@ -77,6 +77,28 @@
     </div>
   </div>
 
+  <!-- Tag Editor Modal -->
+  <div id="tag-editor" class="tag-editor-overlay">
+    <div class="tag-editor-panel">
+      <div class="tag-editor-header">
+        <span class="tag-editor-title">🏷️ タグを編集</span>
+        <button id="tag-editor-close" class="modal-close">✕</button>
+      </div>
+      <div class="tag-editor-body">
+        <div id="tag-editor-chips" class="tag-editor-chips"></div>
+        <div class="tag-input-container">
+          <input type="text" id="tag-input" class="tag-input"
+                 placeholder="タグを入力（Enterで追加）" autocomplete="off">
+          <div id="tag-suggestions" class="tag-suggestions"></div>
+        </div>
+      </div>
+      <div class="tag-editor-footer">
+        <button id="tag-editor-cancel" class="tag-editor-btn cancel">キャンセル</button>
+        <button id="tag-editor-save" class="tag-editor-btn save">保存</button>
+      </div>
+    </div>
+  </div>
+
   <?!= include('JavaScript') ?>
 </body>
 </html>

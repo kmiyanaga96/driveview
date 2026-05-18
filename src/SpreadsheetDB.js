@@ -172,3 +172,46 @@ function dbBatchUpsertContent(items) {
     ).setValues(toAppend);
   }
 }
+
+/**
+ * コンテンツのタグを更新する。
+ * @param {string} targetId 対象コンテンツのID
+ * @param {string} tags カンマ区切りのタグ文字列
+ * @returns {boolean} 更新成功したか
+ */
+function dbUpdateTags(targetId, tags) {
+  var sheet = getMainSheet_();
+  var data = sheet.getDataRange().getValues();
+
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][0] === targetId) {
+      sheet.getRange(i + 1, 4).setValue(tags); // 4列目 = Tags
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * 全コンテンツから一意なタグ一覧を取得する（サジェスト用）。
+ * @returns {Array<string>} ユニークなタグの配列（出現回数降順）
+ */
+function dbGetAllTags() {
+  var sheet = getMainSheet_();
+  var data = sheet.getDataRange().getValues();
+  var tagCount = {};
+
+  for (var i = 1; i < data.length; i++) {
+    var tagsStr = data[i][3] ? String(data[i][3]) : '';
+    if (tagsStr) {
+      tagsStr.split(',').forEach(function (t) {
+        var tag = t.trim();
+        if (tag) tagCount[tag] = (tagCount[tag] || 0) + 1;
+      });
+    }
+  }
+
+  return Object.keys(tagCount).sort(function (a, b) {
+    return tagCount[b] - tagCount[a];
+  });
+}

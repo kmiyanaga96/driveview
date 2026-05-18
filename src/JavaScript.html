@@ -18,7 +18,11 @@ var appState = {
   currentPageIndex: 0,
   loadedPageCount: 0,
   chapterSidebarOpen: false,
-  BATCH_SIZE: 10
+  BATCH_SIZE: 10,
+  // Tag editor
+  tagEditorTarget: null,
+  tagEditorTags: [],
+  tagSuggestionIndex: -1
 };
 
 // === Init ===
@@ -69,6 +73,20 @@ function removeChapter(chapterId, callback) {
 function onError(err) {
   console.error('API Error:', err);
   alert('エラーが発生しました: ' + (err.message || err));
+}
+
+function saveTags(targetId, tagsStr, callback) {
+  google.script.run
+    .withSuccessHandler(callback)
+    .withFailureHandler(onError)
+    .updateTags(targetId, tagsStr);
+}
+
+function fetchAllTags(callback) {
+  google.script.run
+    .withSuccessHandler(callback)
+    .withFailureHandler(onError)
+    .getAllTags();
 }
 
 // ============================================================
@@ -165,10 +183,28 @@ function bindEvents() {
   // Chapter add
   document.getElementById('chapter-add-btn').addEventListener('click', addCurrentChapter);
 
+  // Tag editor
+  document.getElementById('tag-editor').addEventListener('click', function (e) {
+    if (e.target === this) closeTagEditor();
+  });
+  document.getElementById('tag-editor-close').addEventListener('click', closeTagEditor);
+  document.getElementById('tag-editor-cancel').addEventListener('click', closeTagEditor);
+  document.getElementById('tag-editor-save').addEventListener('click', saveTagEditor);
+
+  var tagInput = document.getElementById('tag-input');
+  tagInput.addEventListener('input', onTagInput);
+  tagInput.addEventListener('keydown', onTagInputKeydown);
+  tagInput.addEventListener('focus', function () { onTagInput(); });
+  tagInput.addEventListener('blur', function () {
+    // Delay to allow suggestion click
+    setTimeout(function () { hideSuggestions(); }, 200);
+  });
+
   // Keyboard
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') {
-      if (appState.currentView === 'manga') closeMangaReader();
+      if (document.getElementById('tag-editor').classList.contains('active')) closeTagEditor();
+      else if (appState.currentView === 'manga') closeMangaReader();
       else if (appState.currentView === 'video') closeVideoModal();
     }
   });
@@ -202,6 +238,7 @@ function renderGallery() {
         if (tag) tagChips += '<span class="card-tag">' + escapeHtml(tag) + '</span>';
       });
     }
+    tagChips += '<span class="card-tag-edit" data-target="' + escapeHtml(item.targetId) + '">✏️ タグ編集</span>';
 
     html +=
       '<div class="card" data-index="' + idx + '" style="animation-delay:' + (idx * 0.03) + 's">' +
@@ -217,13 +254,32 @@ function renderGallery() {
   });
   grid.innerHTML = html;
 
-  // Card click events
-  grid.querySelectorAll('.card').forEach(function (card) {
-    card.addEventListener('click', function () {
-      var idx = parseInt(this.dataset.index);
+  // Card click events (thumb area only, not tag edit)
+  grid.querySelectorAll('.card-thumb').forEach(function (thumb) {
+    thumb.addEventListener('click', function () {
+      var card = this.closest('.card');
+      var idx = parseInt(card.dataset.index);
       var item = appState.filteredContent[idx];
       if (item.type === 'Video') openVideoModal(item);
       else if (item.type === 'Manga') openMangaReader(item);
+    });
+  });
+  grid.querySelectorAll('.card-title').forEach(function (title) {
+    title.addEventListener('click', function () {
+      var card = this.closest('.card');
+      var idx = parseInt(card.dataset.index);
+      var item = appState.filteredContent[idx];
+      if (item.type === 'Video') openVideoModal(item);
+      else if (item.type === 'Manga') openMangaReader(item);
+    });
+  });
+
+  // Tag edit button
+  grid.querySelectorAll('.card-tag-edit').forEach(function (btn) {
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      var targetId = this.dataset.target;
+      openTagEditor(targetId);
     });
   });
 }
@@ -523,6 +579,164 @@ function renderChapterList() {
       });
     });
   });
+}
+
+// ============================================================
+// Tag Editor
+// ============================================================
+
+function openTagEditor(targetId) {
+  var item = appState.allContent.find(function (c) { return c.targetId === targetId; });
+  if (!item) return;
+
+  appState.tagEditorTarget = item;
+  appState.tagEditorTags = item.tags
+    ? item.tags.split(',').map(function (t) { return t.trim(); }).filter(Boolean)
+    : [];
+  appState.tagSuggestionIndex = -1;
+
+  renderTagEditorChips();
+  document.getElementById('tag-input').value = '';
+  hideSuggestions();
+  document.getElementById('tag-editor').classList.add('active');
+  setTimeout(function () { document.getElementById('tag-input').focus(); }, 100);
+}
+
+function closeTagEditor() {
+  document.getElementById('tag-editor').classList.remove('active');
+  appState.tagEditorTarget = null;
+  appState.tagEditorTags = [];
+  hideSuggestions();
+}
+
+function saveTagEditor() {
+  if (!appState.tagEditorTarget) return;
+
+  var targetId = appState.tagEditorTarget.targetId;
+  var tagsStr = appState.tagEditorTags.join(', ');
+
+  // Save to backend
+  saveTags(targetId, tagsStr, function () {
+    // Update local state
+    var item = appState.allContent.find(function (c) { return c.targetId === targetId; });
+    if (item) item.tags = tagsStr;
+
+    extractTags();
+    renderTagBar();
+    applyFilters();
+    closeTagEditor();
+  });
+}
+
+function renderTagEditorChips() {
+  var container = document.getElementById('tag-editor-chips');
+  var html = '';
+  appState.tagEditorTags.forEach(function (tag, idx) {
+    html +=
+      '<span class="tag-editor-chip">' +
+        escapeHtml(tag) +
+        '<button class="tag-editor-chip-remove" data-idx="' + idx + '">✕</button>' +
+      '</span>';
+  });
+  container.innerHTML = html;
+
+  container.querySelectorAll('.tag-editor-chip-remove').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var idx = parseInt(this.dataset.idx);
+      appState.tagEditorTags.splice(idx, 1);
+      renderTagEditorChips();
+    });
+  });
+}
+
+function addTagToEditor(tag) {
+  tag = tag.trim();
+  if (!tag) return;
+  // Prevent duplicates
+  if (appState.tagEditorTags.indexOf(tag) !== -1) return;
+  appState.tagEditorTags.push(tag);
+  renderTagEditorChips();
+  document.getElementById('tag-input').value = '';
+  hideSuggestions();
+}
+
+function onTagInput() {
+  var input = document.getElementById('tag-input');
+  var query = input.value.trim().toLowerCase();
+  var suggestions = document.getElementById('tag-suggestions');
+  appState.tagSuggestionIndex = -1;
+
+  if (!query) {
+    hideSuggestions();
+    return;
+  }
+
+  // Filter existing tags that match query and aren't already added
+  var matches = appState.allTags.filter(function (tag) {
+    return tag.toLowerCase().indexOf(query) !== -1 &&
+           appState.tagEditorTags.indexOf(tag) === -1;
+  }).slice(0, 8);
+
+  // Check if exact match exists
+  var exactExists = appState.allTags.some(function (t) { return t.toLowerCase() === query; });
+  var alreadyAdded = appState.tagEditorTags.some(function (t) { return t.toLowerCase() === query; });
+
+  var html = '';
+  matches.forEach(function (tag, idx) {
+    html += '<div class="tag-suggestion-item" data-tag="' + escapeHtml(tag) + '" data-idx="' + idx + '">' + escapeHtml(tag) + '</div>';
+  });
+
+  // Offer to create new tag if not exact match
+  if (!exactExists && !alreadyAdded && query.length > 0) {
+    html += '<div class="tag-suggestion-item tag-suggestion-new" data-tag="' + escapeHtml(input.value.trim()) + '" data-idx="' + matches.length + '">"' + escapeHtml(input.value.trim()) + '" を新規作成</div>';
+  }
+
+  if (html) {
+    suggestions.innerHTML = html;
+    suggestions.classList.add('visible');
+
+    suggestions.querySelectorAll('.tag-suggestion-item').forEach(function (item) {
+      item.addEventListener('mousedown', function (e) {
+        e.preventDefault();
+        addTagToEditor(this.dataset.tag);
+      });
+    });
+  } else {
+    hideSuggestions();
+  }
+}
+
+function onTagInputKeydown(e) {
+  var suggestions = document.getElementById('tag-suggestions');
+  var items = suggestions.querySelectorAll('.tag-suggestion-item');
+
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    appState.tagSuggestionIndex = Math.min(appState.tagSuggestionIndex + 1, items.length - 1);
+    highlightSuggestion(items);
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    appState.tagSuggestionIndex = Math.max(appState.tagSuggestionIndex - 1, -1);
+    highlightSuggestion(items);
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    if (appState.tagSuggestionIndex >= 0 && items[appState.tagSuggestionIndex]) {
+      addTagToEditor(items[appState.tagSuggestionIndex].dataset.tag);
+    } else if (e.target.value.trim()) {
+      addTagToEditor(e.target.value.trim());
+    }
+  }
+}
+
+function highlightSuggestion(items) {
+  items.forEach(function (item, idx) {
+    item.classList.toggle('highlighted', idx === appState.tagSuggestionIndex);
+  });
+}
+
+function hideSuggestions() {
+  document.getElementById('tag-suggestions').classList.remove('visible');
+  appState.tagSuggestionIndex = -1;
 }
 
 // ============================================================

@@ -46,3 +46,21 @@ function getAllContent() {
 // getChapters()    → ChapterService.js で定義済み
 // addChapter()     → ChapterService.js で定義済み
 // deleteChapter()  → ChapterService.js で定義済み
+
+/**
+ * コンテンツのタグを更新する。
+ * @param {string} targetId
+ * @param {string} tags カンマ区切りタグ文字列
+ * @returns {boolean}
+ */
+function updateTags(targetId, tags) {
+  return dbUpdateTags(targetId, tags);
+}
+
+/**
+ * 全ユニークタグを取得する（サジェスト用）。
+ * @returns {Array<string>}
+ */
+function getAllTags() {
+  return dbGetAllTags();
+}
