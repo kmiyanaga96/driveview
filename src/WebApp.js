@@ -67,25 +67,20 @@ function getAllTags() {
 
 /**
  * サムネイル候補を取得する（自動サジェスト）。
- * 対象ファイルの親フォルダ内の画像＋Drive自動生成サムネイルを返す。
+ * 対象ファイルの親フォルダ内の画像を返す。
  * @param {string} fileId 動画ファイルID (= Target_ID)
- * @returns {Object} { current, driveThumbnail, suggestions[] }
+ * @returns {Object} { current, suggestions[] }
  */
 function getSuggestedThumbnails(fileId) {
   var config = getConfig();
-  var result = { current: '', driveThumbnail: '', suggestions: [] };
+  var result = { current: '', suggestions: [] };
 
   try {
     // 対象ファイルのメタ情報を取得
     var file = Drive.Files.get(fileId, {
-      fields: 'id,name,parents,thumbnailLink',
+      fields: 'id,name,parents',
       supportsAllDrives: true
     });
-
-    // Drive 自動生成サムネイル
-    if (file.thumbnailLink) {
-      result.driveThumbnail = resizeThumbnail_(file.thumbnailLink, config.THUMB_SIZE_GRID);
-    }
 
     // 現在のDB登録サムネイルを取得
     var allContent = dbGetAllContent();
