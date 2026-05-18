@@ -1068,13 +1068,27 @@ function saveThumbEditor() {
   var targetId = appState.thumbEditorTarget.targetId;
   var url = appState.thumbEditorSelected;
 
+  // Optimistic Update (Immediate UI Reflection)
+  var item = appState.allContent.find(function (c) { return c.targetId === targetId; });
+  if (item) item.thumbnailUrl = url;
+
+  // Directly update only the affected card to avoid heavy full-grid re-render
+  var cardIdx = appState.filteredContent.findIndex(function (c) { return c.targetId === targetId; });
+  if (cardIdx !== -1) {
+    var cardEl = document.querySelector('.card[data-index="' + cardIdx + '"]');
+    if (cardEl) {
+      var imgEl = cardEl.querySelector('.card-thumb img');
+      if (imgEl) {
+        imgEl.src = escapeHtml(url);
+        imgEl.style.display = ''; // Reset display in case it was hidden by onerror
+      }
+    }
+  }
+
+  closeThumbEditor();
+
+  // Save to backend quietly in background
   google.script.run
-    .withSuccessHandler(function () {
-      var item = appState.allContent.find(function (c) { return c.targetId === targetId; });
-      if (item) item.thumbnailUrl = url;
-      applyFilters();
-      closeThumbEditor();
-    })
     .withFailureHandler(onError)
     .updateThumbnail(targetId, url);
 }
