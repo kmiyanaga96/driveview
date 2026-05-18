@@ -98,9 +98,17 @@ function fetchAllTags(callback) {
 
 function onContentLoaded(data) {
   appState.allContent = data || [];
+
+  // #8: Parse tags once and cache for fast filtering
+  appState.allContent.forEach(function (item) {
+    item._parsedTags = item.tags
+      ? item.tags.split(',').map(function (t) { return t.trim(); }).filter(Boolean)
+      : [];
+  });
+
   extractTags();
-  applyFilters();
   renderTagBar();
+  applyFilters();
   hideLoading();
 }
 
@@ -136,9 +144,9 @@ function applyFilters() {
     // Search filter
     if (query && item.title.toLowerCase().indexOf(query) === -1) return false;
 
-    // Tag filter
+    // Tag filter (#8: use cached parsed tags)
     if (tags.length > 0) {
-      var itemTags = item.tags ? item.tags.split(',').map(function (t) { return t.trim(); }) : [];
+      var itemTags = item._parsedTags || [];
       var match = tags.every(function (t) { return itemTags.indexOf(t) !== -1; });
       if (!match) return false;
     }
@@ -154,11 +162,13 @@ function applyFilters() {
 // ============================================================
 
 function bindEvents() {
-  // Search
+  // #2: Debounce search input to avoid re-rendering on every keystroke
   var searchInput = document.getElementById('search-input');
+  var searchTimer = null;
   searchInput.addEventListener('input', function () {
     appState.searchQuery = this.value;
-    applyFilters();
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(function () { applyFilters(); }, 200);
   });
 
   // Type tabs
@@ -253,7 +263,7 @@ function renderGallery() {
     }
 
     html +=
-      '<div class="card" data-index="' + idx + '" style="animation-delay:' + (idx * 0.03) + 's">' +
+      '<div class="card" data-index="' + idx + '" style="animation-delay:' + Math.min(idx * 0.03, 0.3) + 's">' +
         '<div class="card-thumb" style="cursor:pointer;">' +
           '<img src="' + escapeHtml(item.thumbnailUrl || '') + '" alt="" loading="lazy" onerror="this.style.display=\'none\'">' +
           '<span class="card-type-badge ' + item.type.toLowerCase() + '">' + item.type + '</span>' +
@@ -634,7 +644,10 @@ function saveTagEditor() {
 
   // Optimistic Update (Immediate UI Reflection)
   var item = appState.allContent.find(function (c) { return c.targetId === targetId; });
-  if (item) item.tags = tagsStr;
+  if (item) {
+    item.tags = tagsStr;
+    item._parsedTags = sortedTags; // Update cache
+  }
 
   extractTags();
   renderTagBar();
@@ -794,19 +807,9 @@ function openThumbEditor(targetId) {
   appState.thumbEditorTarget = item;
   appState.thumbEditorSelected = item.thumbnailUrl || '';
 
-  var body = document.getElementById('thumb-editor-body');
-  body.innerHTML = '<div class="thumb-editor-loading"><div class="loading-spinner"></div>サムネイル候補を取得中...</div>';
-
+  // #1: Render immediately from local state, no GAS call needed
   document.getElementById('thumb-editor').classList.add('active');
-
-  // Fetch suggestions from backend
-  google.script.run
-    .withSuccessHandler(function (data) { renderThumbEditor(data); })
-    .withFailureHandler(function (err) {
-      body.innerHTML = '<div class="thumb-editor-loading">取得に失敗しました</div>';
-      onError(err);
-    })
-    .getSuggestedThumbnails(targetId);
+  renderThumbEditor({ current: item.thumbnailUrl || '' });
 }
 
 function closeThumbEditor() {
@@ -1104,11 +1107,15 @@ function saveThumbEditor() {
 // Utilities
 // ============================================================
 
+// #7: Pure string replacement instead of DOM-based escaping
 function escapeHtml(str) {
   if (!str) return '';
-  var div = document.createElement('div');
-  div.appendChild(document.createTextNode(str));
-  return div.innerHTML;
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function hideLoading() {

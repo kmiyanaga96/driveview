@@ -65,25 +65,7 @@ function getAllTags() {
   return dbGetAllTags();
 }
 
-/**
- * 現在のサムネイル情報を取得する。
- * @param {string} fileId 動画ファイルID (= Target_ID)
- * @returns {Object} { current }
- */
-function getSuggestedThumbnails(fileId) {
-  var result = { current: '' };
-
-  try {
-    // 現在のDB登録サムネイルを取得
-    var allContent = dbGetAllContent();
-    var item = allContent.find(function (c) { return c.targetId === fileId; });
-    if (item) result.current = item.thumbnailUrl || '';
-  } catch (e) {
-    Logger.log('getSuggestedThumbnails error: ' + e.message);
-  }
-
-  return result;
-}
+// getSuggestedThumbnails は廃止 — フロントエンドの appState から直接取得
 
 /**
  * サムネイルURLを更新する。
