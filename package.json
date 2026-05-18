@@ -1,0 +1,21 @@
+{
+  "name": "driveview",
+  "version": "1.0.0",
+  "description": "Google Apps Script project for DriveView - managed with clasp",
+  "scripts": {
+    "push": "clasp push",
+    "pull": "clasp pull",
+    "watch": "clasp push --watch",
+    "open": "clasp open",
+    "deploy": "clasp deploy",
+    "versions": "clasp versions",
+    "logs": "clasp logs"
+  },
+  "devDependencies": {
+    "@google/clasp": "^3.3.0",
+    "@types/google-apps-script": "^1.0.83"
+  },
+  "keywords": ["google-apps-script", "clasp", "driveview"],
+  "author": "Kanta Miyanaga",
+  "license": "PRIVATE"
+}
