@@ -609,11 +609,7 @@ function openTagEditor(targetId) {
     : [];
   appState.tagSuggestionIndex = -1;
 
-  // Populate datalist for autofill
-  var datalist = document.getElementById('all-tags-list');
-  if (datalist && appState.allTags) {
-    datalist.innerHTML = appState.allTags.map(function(t) { return '<option value="' + escapeHtml(t) + '">'; }).join('');
-  }
+
 
   renderTagEditorChips();
   document.getElementById('tag-input').value = '';
@@ -761,6 +757,17 @@ function onTagInputKeydown(e) {
       addTagToEditor(items[appState.tagSuggestionIndex].dataset.tag);
     } else if (e.target.value.trim()) {
       addTagToEditor(e.target.value.trim());
+    }
+  } else if (e.key === 'Tab') {
+    e.preventDefault();
+    if (items.length > 0) {
+      var targetItem = appState.tagSuggestionIndex >= 0 ? items[appState.tagSuggestionIndex] : items[0];
+      
+      // Auto-complete if it's an existing tag (skip "Create new" unless explicitly highlighted)
+      if (!targetItem.classList.contains('tag-suggestion-new') || appState.tagSuggestionIndex >= 0) {
+        e.target.value = targetItem.dataset.tag;
+        onTagInput(); // Refresh suggestions based on the newly completed word
+      }
     }
   }
 }
