@@ -819,20 +819,6 @@ function renderThumbEditor(data) {
     html += '<div id="frame-capture-grid" class="thumb-grid" style="margin-top:8px"></div>';
   }
 
-  // Folder images
-  if (data.suggestions && data.suggestions.length > 0) {
-    html += '<div class="thumb-editor-section-label">同じフォルダの画像 (' + data.suggestions.length + '件)</div>';
-    html += '<div class="thumb-grid">';
-    data.suggestions.forEach(function (s) {
-      var sel = appState.thumbEditorSelected === s.url ? ' selected' : '';
-      html += '<div class="thumb-option' + sel + '" data-url="' + escapeHtml(s.url) + '">';
-      html += '<img src="' + escapeHtml(s.url) + '" loading="lazy">';
-      html += '<span class="thumb-option-label">' + escapeHtml(s.name) + '</span>';
-      html += '</div>';
-    });
-    html += '</div>';
-  }
-
   body.innerHTML = html;
   bindThumbOptionClicks(body);
 
