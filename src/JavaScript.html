@@ -797,14 +797,26 @@ function closeThumbEditor() {
 
 function renderThumbEditor(data) {
   var body = document.getElementById('thumb-editor-body');
+  var item = appState.thumbEditorTarget;
   var html = '';
 
   // Current thumbnail
   html += '<div class="thumb-editor-section-label">現在のサムネイル</div>';
   if (data.current) {
-    html += '<div class="thumb-editor-current"><img src="' + escapeHtml(data.current) + '" onerror="this.parentElement.innerHTML=\'\u306a\u3057\'"></div>';
+    html += '<div class="thumb-editor-current"><img src="' + escapeHtml(data.current) + '" onerror="this.parentElement.innerHTML=\'\\u306a\\u3057\'"></div>';
   } else {
     html += '<div class="thumb-editor-current" style="display:flex;align-items:center;justify-content:center;color:var(--text-muted)">未設定</div>';
+  }
+
+  // Frame capture button (Video only)
+  if (item && item.type === 'Video') {
+    html += '<div class="thumb-editor-section-label">動画からキャプチャ</div>';
+    html += '<button id="frame-capture-btn" class="frame-capture-btn">🎬 動画から10フレームを自動生成</button>';
+    html += '<div id="frame-capture-progress" class="frame-capture-progress" style="display:none">';
+    html += '<div class="frame-capture-progress-bar"><div id="frame-capture-fill" class="frame-capture-progress-fill" style="width:0%"></div></div>';
+    html += '<div id="frame-capture-status" class="frame-capture-status">準備中...</div>';
+    html += '</div>';
+    html += '<div id="frame-capture-grid" class="thumb-grid" style="margin-top:8px"></div>';
   }
 
   // Drive auto thumbnail
@@ -832,20 +844,180 @@ function renderThumbEditor(data) {
     html += '</div>';
   }
 
-  if (!data.driveThumbnail && (!data.suggestions || data.suggestions.length === 0)) {
-    html += '<div class="thumb-editor-loading">サムネイル候補が見つかりません</div>';
-  }
-
   body.innerHTML = html;
+  bindThumbOptionClicks(body);
 
-  // Bind click events
-  body.querySelectorAll('.thumb-option').forEach(function (opt) {
+  // Frame capture button event
+  var captureBtn = document.getElementById('frame-capture-btn');
+  if (captureBtn) {
+    captureBtn.addEventListener('click', function () {
+      this.disabled = true;
+      this.textContent = '⏳ 動画を読み込み中...';
+      startFrameCapture(item.targetId);
+    });
+  }
+}
+
+function bindThumbOptionClicks(container) {
+  container.querySelectorAll('.thumb-option').forEach(function (opt) {
     opt.addEventListener('click', function () {
-      body.querySelectorAll('.thumb-option').forEach(function (o) { o.classList.remove('selected'); });
+      container.querySelectorAll('.thumb-option').forEach(function (o) { o.classList.remove('selected'); });
       this.classList.add('selected');
       appState.thumbEditorSelected = this.dataset.url;
     });
   });
+}
+
+// ============================================================
+// Video Frame Capture
+// ============================================================
+
+function startFrameCapture(fileId) {
+  var progress = document.getElementById('frame-capture-progress');
+  var fill = document.getElementById('frame-capture-fill');
+  var status = document.getElementById('frame-capture-status');
+  progress.style.display = 'block';
+  status.textContent = 'アクセス情報を取得中...';
+  fill.style.width = '5%';
+
+  google.script.run
+    .withSuccessHandler(function (info) {
+      status.textContent = '動画を読み込み中...';
+      fill.style.width = '10%';
+      fetchVideoAndCapture(info, fill, status);
+    })
+    .withFailureHandler(function (err) {
+      status.textContent = 'エラー: ' + (err.message || err);
+      var btn = document.getElementById('frame-capture-btn');
+      if (btn) { btn.disabled = false; btn.textContent = '🎬 再試行'; }
+    })
+    .getVideoAccessInfo(fileId);
+}
+
+function fetchVideoAndCapture(info, fill, status) {
+  var url = 'https://www.googleapis.com/drive/v3/files/' + info.fileId + '?alt=media';
+
+  fetch(url, {
+    headers: { 'Authorization': 'Bearer ' + info.token }
+  })
+  .then(function (response) {
+    if (!response.ok) throw new Error('動画の取得に失敗 (' + response.status + ')');
+    status.textContent = '動画データを処理中...';
+    fill.style.width = '30%';
+    return response.blob();
+  })
+  .then(function (blob) {
+    var blobUrl = URL.createObjectURL(blob);
+    captureFramesFromBlob(blobUrl, fill, status);
+  })
+  .catch(function (err) {
+    status.textContent = 'エラー: ' + err.message;
+    var btn = document.getElementById('frame-capture-btn');
+    if (btn) { btn.disabled = false; btn.textContent = '🎬 再試行'; }
+  });
+}
+
+function captureFramesFromBlob(blobUrl, fill, status) {
+  var video = document.createElement('video');
+  video.muted = true;
+  video.preload = 'auto';
+
+  video.addEventListener('error', function () {
+    URL.revokeObjectURL(blobUrl);
+    status.textContent = 'この動画形式はフレームキャプチャに対応していません';
+    var btn = document.getElementById('frame-capture-btn');
+    if (btn) { btn.disabled = false; btn.textContent = '🎬 再試行'; }
+  });
+
+  video.addEventListener('loadedmetadata', function () {
+    var duration = video.duration;
+    if (!duration || !isFinite(duration)) {
+      status.textContent = '動画の長さを取得できません';
+      URL.revokeObjectURL(blobUrl);
+      return;
+    }
+
+    status.textContent = 'フレームをキャプチャ中...';
+    fill.style.width = '40%';
+
+    // Generate 10 random timestamps (5%~95% of duration)
+    var timestamps = [];
+    for (var i = 0; i < 10; i++) {
+      var t = duration * (0.05 + Math.random() * 0.9);
+      timestamps.push(t);
+    }
+    timestamps.sort(function (a, b) { return a - b; });
+
+    captureFramesSequentially(video, timestamps, 0, [], fill, status, blobUrl);
+  });
+
+  video.src = blobUrl;
+  video.load();
+}
+
+function captureFramesSequentially(video, timestamps, idx, frames, fill, status, blobUrl) {
+  if (idx >= timestamps.length) {
+    // All frames captured
+    URL.revokeObjectURL(blobUrl);
+    fill.style.width = '100%';
+    status.textContent = '完了！ ' + frames.length + ' フレームをキャプチャしました';
+    displayCapturedFrames(frames);
+    return;
+  }
+
+  var progress = 40 + (idx / timestamps.length) * 55;
+  fill.style.width = progress + '%';
+  status.textContent = 'フレーム ' + (idx + 1) + ' / ' + timestamps.length + ' をキャプチャ中...';
+
+  video.currentTime = timestamps[idx];
+
+  video.addEventListener('seeked', function onSeeked() {
+    video.removeEventListener('seeked', onSeeked);
+
+    try {
+      var canvas = document.createElement('canvas');
+      canvas.width = Math.min(video.videoWidth, 640);
+      canvas.height = Math.round(canvas.width * (video.videoHeight / video.videoWidth));
+      var ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      var dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+      var timeLabel = formatTime(timestamps[idx]);
+
+      frames.push({ url: dataUrl, time: timeLabel });
+    } catch (e) {
+      console.warn('Frame capture failed at ' + timestamps[idx] + ': ' + e.message);
+    }
+
+    // Next frame
+    captureFramesSequentially(video, timestamps, idx + 1, frames, fill, status, blobUrl);
+  });
+}
+
+function formatTime(seconds) {
+  var m = Math.floor(seconds / 60);
+  var s = Math.floor(seconds % 60);
+  return m + ':' + (s < 10 ? '0' : '') + s;
+}
+
+function displayCapturedFrames(frames) {
+  var grid = document.getElementById('frame-capture-grid');
+  if (!grid || frames.length === 0) return;
+
+  var body = document.getElementById('thumb-editor-body');
+  var html = '';
+  frames.forEach(function (f) {
+    html += '<div class="thumb-option" data-url="' + f.url + '">';
+    html += '<img src="' + f.url + '">';
+    html += '<span class="thumb-option-label">' + f.time + '</span>';
+    html += '</div>';
+  });
+  grid.innerHTML = html;
+
+  bindThumbOptionClicks(body);
+
+  var btn = document.getElementById('frame-capture-btn');
+  if (btn) { btn.disabled = false; btn.textContent = '🎬 再キャプチャ（別の10フレーム）'; }
 }
 
 function saveThumbEditor() {
@@ -856,7 +1028,6 @@ function saveThumbEditor() {
 
   google.script.run
     .withSuccessHandler(function () {
-      // Update local state
       var item = appState.allContent.find(function (c) { return c.targetId === targetId; });
       if (item) item.thumbnailUrl = url;
       applyFilters();
