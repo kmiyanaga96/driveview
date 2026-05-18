@@ -25,8 +25,8 @@ function getConfig() {
     CHAPTERS_SHEET: 'Chapters',
 
     // ===== サムネイル =====
-    THUMB_SIZE_GRID: 's400',
-    THUMB_SIZE_READER: 's1600',
+    THUMB_SIZE_GRID: 'w400-rw',
+    THUMB_SIZE_READER: 'w1200-rw',
 
     // ===== 対応拡張子 =====
     VIDEO_MIMETYPES: [
