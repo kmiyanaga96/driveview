@@ -1,0 +1,48 @@
+/**
+ * DriveView - Configuration
+ *
+ * ユーザーはここでルートフォルダIDを設定すること。
+ * スプレッドシートIDはsetupDatabase()実行時に自動設定される。
+ */
+
+/**
+ * アプリケーション設定を返す。
+ * @returns {Object} 設定オブジェクト
+ */
+function getConfig() {
+  var props = PropertiesService.getScriptProperties();
+  return {
+    // ===== ユーザー設定必須 =====
+    // Google Drive上のルートフォルダID (複数指定可)
+    VIDEO_FOLDER_IDS: ['YOUR_VIDEO_FOLDER_ID_HERE'],
+    MANGA_FOLDER_IDS: ['YOUR_MANGA_FOLDER_ID_HERE'],
+
+    // ===== 自動設定 (setupDatabase()で設定) =====
+    SPREADSHEET_ID: props.getProperty('SPREADSHEET_ID') || '',
+
+    // ===== シート名 =====
+    MAIN_SHEET: 'Main',
+    CHAPTERS_SHEET: 'Chapters',
+
+    // ===== サムネイル =====
+    THUMB_SIZE_GRID: 's400',
+    THUMB_SIZE_READER: 's1600',
+
+    // ===== 対応拡張子 =====
+    VIDEO_MIMETYPES: [
+      'video/mp4', 'video/x-matroska', 'video/avi',
+      'video/quicktime', 'video/webm'
+    ],
+    IMAGE_MIMETYPES: [
+      'image/jpeg', 'image/png', 'image/gif',
+      'image/webp', 'image/bmp'
+    ],
+
+    // ===== 同期 =====
+    LAST_SYNC_KEY: 'LAST_SYNC_TIME',
+    MAX_EXEC_MS: 5 * 60 * 1000, // 5分 (1分バッファ)
+
+    // ===== Lazy Loading =====
+    MANGA_PAGE_BATCH: 10
+  };
+}

@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DriveView</title>
+  <?!= include('Stylesheet') ?>
+</head>
+<body>
+
+  <!-- Loading Overlay -->
+  <div id="loading-overlay">
+    <div class="loading-spinner"></div>
+    <div class="loading-text">コンテンツを読み込み中...</div>
+  </div>
+
+  <!-- Header -->
+  <header class="header">
+    <div class="header-inner">
+      <div class="logo">▶ DriveView</div>
+      <div class="search-container">
+        <span class="search-icon">🔍</span>
+        <input type="text" id="search-input" class="search-input"
+               placeholder="タイトルで検索..." autocomplete="off">
+      </div>
+      <div class="type-tabs">
+        <button class="type-tab active" data-type="All">すべて</button>
+        <button class="type-tab" data-type="Video">動画</button>
+        <button class="type-tab" data-type="Manga">漫画</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Tag Filter Bar -->
+  <div id="tag-bar" class="tag-bar"></div>
+
+  <!-- Gallery Grid -->
+  <main class="gallery-container">
+    <div id="gallery-stats" class="gallery-stats"></div>
+    <div id="gallery-grid" class="gallery-grid"></div>
+  </main>
+
+  <!-- Video Modal -->
+  <div id="video-modal" class="modal-overlay">
+    <div class="modal-content">
+      <div class="modal-header">
+        <span id="modal-title" class="modal-title"></span>
+        <button id="modal-close-btn" class="modal-close">✕</button>
+      </div>
+      <div class="modal-iframe-wrap">
+        <iframe id="video-iframe" allowfullscreen></iframe>
+      </div>
+    </div>
+  </div>
+
+  <!-- Manga Reader -->
+  <div id="manga-reader" class="manga-reader">
+    <div class="manga-topbar">
+      <div class="manga-topbar-left">
+        <button id="manga-back-btn" class="manga-back-btn">←</button>
+        <span id="manga-reader-title" class="manga-reader-title"></span>
+        <span id="manga-page-indicator" class="manga-page-indicator"></span>
+      </div>
+      <div class="manga-topbar-right">
+        <button id="chapter-add-btn" class="manga-btn accent">＋ チャプター追加</button>
+        <button id="chapter-toggle-btn" class="manga-btn">📑 目次</button>
+      </div>
+    </div>
+    <div class="manga-body">
+      <div id="manga-pages" class="manga-pages-container"></div>
+      <div id="chapter-sidebar" class="chapter-sidebar">
+        <div class="chapter-sidebar-header">
+          <span class="chapter-sidebar-title">チャプター一覧</span>
+        </div>
+        <div id="chapter-list" class="chapter-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <?!= include('JavaScript') ?>
+</body>
+</html>

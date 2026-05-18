@@ -1,0 +1,546 @@
+<script>
+/* ============================================================
+   DriveView - Frontend SPA Logic
+   ============================================================ */
+
+// === State ===
+var appState = {
+  allContent: [],
+  filteredContent: [],
+  allTags: [],
+  selectedTags: [],
+  selectedType: 'All',
+  searchQuery: '',
+  currentView: 'gallery',
+  currentItem: null,
+  mangaPages: [],
+  mangaChapters: [],
+  currentPageIndex: 0,
+  loadedPageCount: 0,
+  chapterSidebarOpen: false,
+  BATCH_SIZE: 10
+};
+
+// === Init ===
+document.addEventListener('DOMContentLoaded', function () {
+  loadAllContent();
+  bindEvents();
+});
+
+// ============================================================
+// API Wrappers (google.script.run)
+// ============================================================
+
+function loadAllContent() {
+  google.script.run
+    .withSuccessHandler(onContentLoaded)
+    .withFailureHandler(onError)
+    .getAllContent();
+}
+
+function loadMangaPages(folderId, callback) {
+  google.script.run
+    .withSuccessHandler(callback)
+    .withFailureHandler(onError)
+    .getMangaPages(folderId);
+}
+
+function loadChapters(targetId, callback) {
+  google.script.run
+    .withSuccessHandler(callback)
+    .withFailureHandler(onError)
+    .getChapters(targetId);
+}
+
+function saveChapter(targetId, position, label, callback) {
+  google.script.run
+    .withSuccessHandler(callback)
+    .withFailureHandler(onError)
+    .addChapter(targetId, position, label);
+}
+
+function removeChapter(chapterId, callback) {
+  google.script.run
+    .withSuccessHandler(callback)
+    .withFailureHandler(onError)
+    .deleteChapter(chapterId);
+}
+
+function onError(err) {
+  console.error('API Error:', err);
+  alert('エラーが発生しました: ' + (err.message || err));
+}
+
+// ============================================================
+// Data Loading
+// ============================================================
+
+function onContentLoaded(data) {
+  appState.allContent = data || [];
+  extractTags();
+  applyFilters();
+  renderTagBar();
+  hideLoading();
+}
+
+function extractTags() {
+  var tagSet = {};
+  appState.allContent.forEach(function (item) {
+    if (item.tags) {
+      item.tags.split(',').forEach(function (t) {
+        var tag = t.trim();
+        if (tag) tagSet[tag] = (tagSet[tag] || 0) + 1;
+      });
+    }
+  });
+  // 出現回数の多い順にソート
+  appState.allTags = Object.keys(tagSet).sort(function (a, b) {
+    return tagSet[b] - tagSet[a];
+  });
+}
+
+// ============================================================
+// Search & Filter (Client-side, zero latency)
+// ============================================================
+
+function applyFilters() {
+  var query = appState.searchQuery.toLowerCase();
+  var tags = appState.selectedTags;
+  var type = appState.selectedType;
+
+  appState.filteredContent = appState.allContent.filter(function (item) {
+    // Type filter
+    if (type !== 'All' && item.type !== type) return false;
+
+    // Search filter
+    if (query && item.title.toLowerCase().indexOf(query) === -1) return false;
+
+    // Tag filter
+    if (tags.length > 0) {
+      var itemTags = item.tags ? item.tags.split(',').map(function (t) { return t.trim(); }) : [];
+      var match = tags.every(function (t) { return itemTags.indexOf(t) !== -1; });
+      if (!match) return false;
+    }
+
+    return true;
+  });
+
+  renderGallery();
+}
+
+// ============================================================
+// Event Binding
+// ============================================================
+
+function bindEvents() {
+  // Search
+  var searchInput = document.getElementById('search-input');
+  searchInput.addEventListener('input', function () {
+    appState.searchQuery = this.value;
+    applyFilters();
+  });
+
+  // Type tabs
+  document.querySelectorAll('.type-tab').forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      document.querySelectorAll('.type-tab').forEach(function (t) { t.classList.remove('active'); });
+      this.classList.add('active');
+      appState.selectedType = this.dataset.type;
+      applyFilters();
+    });
+  });
+
+  // Video modal close
+  document.getElementById('video-modal').addEventListener('click', function (e) {
+    if (e.target === this) closeVideoModal();
+  });
+  document.getElementById('modal-close-btn').addEventListener('click', closeVideoModal);
+
+  // Manga reader close
+  document.getElementById('manga-back-btn').addEventListener('click', closeMangaReader);
+
+  // Chapter toggle
+  document.getElementById('chapter-toggle-btn').addEventListener('click', toggleChapterSidebar);
+
+  // Chapter add
+  document.getElementById('chapter-add-btn').addEventListener('click', addCurrentChapter);
+
+  // Keyboard
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') {
+      if (appState.currentView === 'manga') closeMangaReader();
+      else if (appState.currentView === 'video') closeVideoModal();
+    }
+  });
+}
+
+// ============================================================
+// Rendering - Gallery
+// ============================================================
+
+function renderGallery() {
+  var grid = document.getElementById('gallery-grid');
+  var stats = document.getElementById('gallery-stats');
+
+  stats.textContent = appState.filteredContent.length + ' 件のコンテンツ';
+
+  if (appState.filteredContent.length === 0) {
+    grid.innerHTML =
+      '<div class="empty-state">' +
+        '<div class="empty-state-icon">📂</div>' +
+        '<div class="empty-state-text">コンテンツが見つかりません</div>' +
+      '</div>';
+    return;
+  }
+
+  var html = '';
+  appState.filteredContent.forEach(function (item, idx) {
+    var tagChips = '';
+    if (item.tags) {
+      item.tags.split(',').slice(0, 3).forEach(function (t) {
+        var tag = t.trim();
+        if (tag) tagChips += '<span class="card-tag">' + escapeHtml(tag) + '</span>';
+      });
+    }
+
+    html +=
+      '<div class="card" data-index="' + idx + '" style="animation-delay:' + (idx * 0.03) + 's">' +
+        '<div class="card-thumb">' +
+          '<img src="' + escapeHtml(item.thumbnailUrl || '') + '" alt="" loading="lazy" onerror="this.style.display=\'none\'">' +
+          '<span class="card-type-badge ' + item.type.toLowerCase() + '">' + item.type + '</span>' +
+        '</div>' +
+        '<div class="card-body">' +
+          '<div class="card-title">' + escapeHtml(item.title) + '</div>' +
+          '<div class="card-tags">' + tagChips + '</div>' +
+        '</div>' +
+      '</div>';
+  });
+  grid.innerHTML = html;
+
+  // Card click events
+  grid.querySelectorAll('.card').forEach(function (card) {
+    card.addEventListener('click', function () {
+      var idx = parseInt(this.dataset.index);
+      var item = appState.filteredContent[idx];
+      if (item.type === 'Video') openVideoModal(item);
+      else if (item.type === 'Manga') openMangaReader(item);
+    });
+  });
+}
+
+function renderTagBar() {
+  var bar = document.getElementById('tag-bar');
+  var html = '';
+  appState.allTags.forEach(function (tag) {
+    var active = appState.selectedTags.indexOf(tag) !== -1 ? ' active' : '';
+    html += '<button class="tag-chip' + active + '" data-tag="' + escapeHtml(tag) + '">' + escapeHtml(tag) + '</button>';
+  });
+  bar.innerHTML = html;
+
+  bar.querySelectorAll('.tag-chip').forEach(function (chip) {
+    chip.addEventListener('click', function () {
+      var tag = this.dataset.tag;
+      var idx = appState.selectedTags.indexOf(tag);
+      if (idx === -1) appState.selectedTags.push(tag);
+      else appState.selectedTags.splice(idx, 1);
+      this.classList.toggle('active');
+      applyFilters();
+    });
+  });
+}
+
+// ============================================================
+// Video Modal
+// ============================================================
+
+function openVideoModal(item) {
+  appState.currentView = 'video';
+  appState.currentItem = item;
+
+  document.getElementById('modal-title').textContent = item.title;
+
+  var iframe = document.getElementById('video-iframe');
+  // webViewLink を preview 用に変換
+  iframe.src = item.webViewUrl ? item.webViewUrl.replace(/\/view.*/, '/preview') : '';
+
+  document.getElementById('video-modal').classList.add('active');
+}
+
+function closeVideoModal() {
+  appState.currentView = 'gallery';
+  document.getElementById('video-modal').classList.remove('active');
+  document.getElementById('video-iframe').src = '';
+}
+
+// ============================================================
+// Manga Reader
+// ============================================================
+
+function openMangaReader(item) {
+  appState.currentView = 'manga';
+  appState.currentItem = item;
+  appState.mangaPages = [];
+  appState.loadedPageCount = 0;
+  appState.currentPageIndex = 0;
+  appState.chapterSidebarOpen = false;
+
+  document.getElementById('manga-reader-title').textContent = item.title;
+  document.getElementById('manga-page-indicator').textContent = '読み込み中...';
+  document.getElementById('manga-pages').innerHTML =
+    '<div class="empty-state"><div class="loading-spinner"></div><div class="loading-text">ページを読み込み中...</div></div>';
+  document.getElementById('chapter-list').innerHTML = '';
+  document.getElementById('chapter-sidebar').classList.remove('open');
+
+  document.getElementById('manga-reader').classList.add('active');
+
+  // ページ一覧を動的取得 (要件4.2)
+  loadMangaPages(item.targetId, function (pages) {
+    appState.mangaPages = pages || [];
+    appState.loadedPageCount = 0;
+    renderMangaPages();
+    setupMangaScrollObserver();
+    updatePageIndicator();
+  });
+
+  // チャプター読み込み
+  loadChapters(item.targetId, function (chapters) {
+    appState.mangaChapters = chapters || [];
+    renderChapterList();
+  });
+}
+
+function closeMangaReader() {
+  appState.currentView = 'gallery';
+  document.getElementById('manga-reader').classList.remove('active');
+  appState.mangaPages = [];
+  appState.mangaChapters = [];
+  if (appState.scrollObserver) {
+    appState.scrollObserver.disconnect();
+    appState.scrollObserver = null;
+  }
+}
+
+function renderMangaPages() {
+  var container = document.getElementById('manga-pages');
+  var total = appState.mangaPages.length;
+
+  if (total === 0) {
+    container.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📖</div><div class="empty-state-text">ページが見つかりません</div></div>';
+    return;
+  }
+
+  // 初回: コンテナをクリア
+  if (appState.loadedPageCount === 0) {
+    container.innerHTML = '';
+  }
+
+  // 次のバッチをロード
+  var end = Math.min(appState.loadedPageCount + appState.BATCH_SIZE, total);
+
+  for (var i = appState.loadedPageCount; i < end; i++) {
+    var page = appState.mangaPages[i];
+    var wrapper = document.createElement('div');
+    wrapper.className = 'manga-page-wrapper';
+    wrapper.id = 'page-' + i;
+
+    var img = document.createElement('img');
+    img.dataset.src = page.url;
+    img.alt = 'Page ' + (i + 1);
+    img.addEventListener('load', function () { this.classList.add('loaded'); });
+    img.addEventListener('error', function () {
+      this.style.display = 'none';
+      this.parentElement.innerHTML = '<div class="page-placeholder">読み込みエラー</div>';
+    });
+
+    // Lazy load with IntersectionObserver
+    img.src = page.url; // 既にバッチ管理されているので直接読み込み
+
+    var pageNum = document.createElement('span');
+    pageNum.className = 'manga-page-number';
+    pageNum.textContent = (i + 1) + ' / ' + total;
+
+    wrapper.appendChild(img);
+    wrapper.appendChild(pageNum);
+    container.appendChild(wrapper);
+  }
+
+  appState.loadedPageCount = end;
+
+  // センチネル要素を追加/更新
+  var sentinel = document.getElementById('manga-sentinel');
+  if (sentinel) sentinel.remove();
+
+  if (appState.loadedPageCount < total) {
+    sentinel = document.createElement('div');
+    sentinel.id = 'manga-sentinel';
+    sentinel.style.height = '1px';
+    container.appendChild(sentinel);
+  }
+}
+
+function setupMangaScrollObserver() {
+  if (appState.scrollObserver) {
+    appState.scrollObserver.disconnect();
+  }
+
+  var container = document.getElementById('manga-pages');
+
+  appState.scrollObserver = new MutationObserver(function () {
+    observeSentinel();
+  });
+  appState.scrollObserver.observe(container, { childList: true });
+
+  // IntersectionObserver for lazy loading batches
+  appState.pageLoadObserver = new IntersectionObserver(function (entries) {
+    entries.forEach(function (entry) {
+      if (entry.isIntersecting && entry.target.id === 'manga-sentinel') {
+        renderMangaPages(); // 次のバッチ
+        observeSentinel();
+      }
+    });
+  }, { root: container, rootMargin: '600px' });
+
+  observeSentinel();
+
+  // ページインジケーター更新
+  container.addEventListener('scroll', function () {
+    updatePageIndicator();
+  });
+}
+
+function observeSentinel() {
+  var sentinel = document.getElementById('manga-sentinel');
+  if (sentinel && appState.pageLoadObserver) {
+    appState.pageLoadObserver.observe(sentinel);
+  }
+}
+
+function updatePageIndicator() {
+  var container = document.getElementById('manga-pages');
+  var wrappers = container.querySelectorAll('.manga-page-wrapper');
+  var scrollTop = container.scrollTop;
+  var containerTop = container.getBoundingClientRect().top;
+
+  var currentIdx = 0;
+  for (var i = 0; i < wrappers.length; i++) {
+    var rect = wrappers[i].getBoundingClientRect();
+    if (rect.top - containerTop <= container.clientHeight / 3) {
+      currentIdx = i;
+    }
+  }
+
+  appState.currentPageIndex = currentIdx;
+  var indicator = document.getElementById('manga-page-indicator');
+  indicator.textContent = (currentIdx + 1) + ' / ' + appState.mangaPages.length + ' ページ';
+}
+
+function jumpToPage(pageIndex) {
+  var container = document.getElementById('manga-pages');
+
+  // 必要なページまでロード
+  while (appState.loadedPageCount <= pageIndex && appState.loadedPageCount < appState.mangaPages.length) {
+    renderMangaPages();
+  }
+
+  var target = document.getElementById('page-' + pageIndex);
+  if (target) {
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    appState.currentPageIndex = pageIndex;
+    updatePageIndicator();
+  }
+}
+
+// ============================================================
+// Chapter Management
+// ============================================================
+
+function toggleChapterSidebar() {
+  appState.chapterSidebarOpen = !appState.chapterSidebarOpen;
+  document.getElementById('chapter-sidebar').classList.toggle('open', appState.chapterSidebarOpen);
+}
+
+function addCurrentChapter() {
+  var label = prompt('チャプター名を入力してください:');
+  if (!label || !label.trim()) return;
+
+  var targetId = appState.currentItem.targetId;
+  var position = appState.currentPageIndex;
+
+  saveChapter(targetId, position, label.trim(), function (chapter) {
+    appState.mangaChapters.push(chapter);
+    appState.mangaChapters.sort(function (a, b) { return a.position - b.position; });
+    renderChapterList();
+
+    // サイドバーを自動で開く
+    if (!appState.chapterSidebarOpen) toggleChapterSidebar();
+  });
+}
+
+function renderChapterList() {
+  var list = document.getElementById('chapter-list');
+
+  if (appState.mangaChapters.length === 0) {
+    list.innerHTML = '<div class="chapter-empty">チャプターが登録されていません</div>';
+    return;
+  }
+
+  var html = '';
+  appState.mangaChapters.forEach(function (ch) {
+    html +=
+      '<div class="chapter-item" data-position="' + ch.position + '" data-id="' + escapeHtml(ch.chapterId) + '">' +
+        '<div class="chapter-item-info">' +
+          '<div class="chapter-item-label">' + escapeHtml(ch.label) + '</div>' +
+          '<div class="chapter-item-page">' + (ch.position + 1) + ' ページ</div>' +
+        '</div>' +
+        '<button class="chapter-delete-btn" title="削除">✕</button>' +
+      '</div>';
+  });
+  list.innerHTML = html;
+
+  // Click to jump
+  list.querySelectorAll('.chapter-item').forEach(function (item) {
+    item.addEventListener('click', function (e) {
+      if (e.target.closest('.chapter-delete-btn')) return;
+      var pos = parseInt(this.dataset.position);
+      jumpToPage(pos);
+    });
+  });
+
+  // Delete
+  list.querySelectorAll('.chapter-delete-btn').forEach(function (btn) {
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      var item = this.closest('.chapter-item');
+      var chapterId = item.dataset.id;
+
+      if (!confirm('このチャプターを削除しますか？')) return;
+
+      removeChapter(chapterId, function () {
+        appState.mangaChapters = appState.mangaChapters.filter(function (c) {
+          return c.chapterId !== chapterId;
+        });
+        renderChapterList();
+      });
+    });
+  });
+}
+
+// ============================================================
+// Utilities
+// ============================================================
+
+function escapeHtml(str) {
+  if (!str) return '';
+  var div = document.createElement('div');
+  div.appendChild(document.createTextNode(str));
+  return div.innerHTML;
+}
+
+function hideLoading() {
+  var overlay = document.getElementById('loading-overlay');
+  if (overlay) {
+    overlay.classList.add('hidden');
+    setTimeout(function () { overlay.remove(); }, 500);
+  }
+}
+</script>
