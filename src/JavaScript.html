@@ -262,14 +262,15 @@ function renderGallery() {
       });
     }
 
+    var displayTitle = item.title.replace(/\.(mp4|mkv|avi|mov|webm|zip|rar|7z|pdf)$/i, '');
+
     html +=
       '<div class="card" data-index="' + idx + '" style="animation-delay:' + Math.min(idx * 0.03, 0.3) + 's">' +
         '<div class="card-thumb" style="cursor:pointer;">' +
           '<img src="' + escapeHtml(item.thumbnailUrl || '') + '" alt="" loading="lazy" onerror="this.style.display=\'none\'">' +
-          '<span class="card-type-badge ' + item.type.toLowerCase() + '">' + item.type + '</span>' +
         '</div>' +
         '<div class="card-body">' +
-          '<div class="card-title" style="cursor:pointer;">' + escapeHtml(item.title) + '</div>' +
+          '<div class="card-title" style="cursor:pointer;">' + escapeHtml(displayTitle) + '</div>' +
           '<div class="card-tags">' + tagChips + '</div>' +
           '<div class="card-tags" style="margin-top: 8px;">' +
             '<span class="card-action-btn tag-edit-btn" data-target="' + escapeHtml(item.targetId) + '">✏️ タグ</span>' +
