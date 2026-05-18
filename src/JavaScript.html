@@ -245,9 +245,10 @@ function renderGallery() {
   appState.filteredContent.forEach(function (item, idx) {
     var tagChips = '';
     if (item.tags) {
-      item.tags.split(',').slice(0, 3).forEach(function (t) {
-        var tag = t.trim();
-        if (tag) tagChips += '<span class="card-tag">' + escapeHtml(tag) + '</span>';
+      var parsedTags = item.tags.split(',').map(function(t){return t.trim();}).filter(Boolean);
+      parsedTags.sort(function(a, b){ return a.localeCompare(b, 'ja'); });
+      parsedTags.forEach(function (tag) {
+        tagChips += '<span class="card-tag">' + escapeHtml(tag) + '</span>';
       });
     }
 
@@ -608,6 +609,12 @@ function openTagEditor(targetId) {
     : [];
   appState.tagSuggestionIndex = -1;
 
+  // Populate datalist for autofill
+  var datalist = document.getElementById('all-tags-list');
+  if (datalist && appState.allTags) {
+    datalist.innerHTML = appState.allTags.map(function(t) { return '<option value="' + escapeHtml(t) + '">'; }).join('');
+  }
+
   renderTagEditorChips();
   document.getElementById('tag-input').value = '';
   hideSuggestions();
@@ -626,19 +633,36 @@ function saveTagEditor() {
   if (!appState.tagEditorTarget) return;
 
   var targetId = appState.tagEditorTarget.targetId;
-  var tagsStr = appState.tagEditorTags.join(', ');
+  var sortedTags = appState.tagEditorTags.slice().sort(function(a,b){return a.localeCompare(b, 'ja');});
+  var tagsStr = sortedTags.join(', ');
 
-  // Save to backend
-  saveTags(targetId, tagsStr, function () {
-    // Update local state
-    var item = appState.allContent.find(function (c) { return c.targetId === targetId; });
-    if (item) item.tags = tagsStr;
+  // Optimistic Update (Immediate UI Reflection)
+  var item = appState.allContent.find(function (c) { return c.targetId === targetId; });
+  if (item) item.tags = tagsStr;
 
-    extractTags();
-    renderTagBar();
-    applyFilters();
-    closeTagEditor();
-  });
+  extractTags();
+  renderTagBar();
+  
+  // Directly update only the affected card to avoid heavy full-grid re-render
+  var cardIdx = appState.filteredContent.findIndex(function (c) { return c.targetId === targetId; });
+  if (cardIdx !== -1) {
+    var cardEl = document.querySelector('.card[data-index="' + cardIdx + '"]');
+    if (cardEl) {
+      var tagsContainer = cardEl.querySelector('.card-tags');
+      if (tagsContainer) {
+        var html = '';
+        sortedTags.forEach(function(tag){
+          html += '<span class="card-tag">' + escapeHtml(tag) + '</span>';
+        });
+        tagsContainer.innerHTML = html;
+      }
+    }
+  }
+
+  closeTagEditor();
+
+  // Save to backend quietly in background
+  saveTags(targetId, tagsStr, function () { /* Background save complete */ });
 }
 
 function renderTagEditorChips() {

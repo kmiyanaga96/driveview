@@ -168,18 +168,17 @@ img { display: block; max-width: 100%; }
   gap: 20px;
 }
 
-/* === Card === */
 .card {
   background: var(--bg-surface);
   border-radius: var(--radius);
   overflow: hidden;
   border: 1px solid var(--border);
   cursor: pointer;
-  transition: var(--transition);
+  transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
   animation: fadeInUp 0.4s ease backwards;
+  will-change: transform;
 }
 .card:hover {
-  transform: translateY(-4px);
   border-color: var(--border-hover);
   box-shadow: var(--shadow-card);
 }
