@@ -215,3 +215,22 @@ function dbGetAllTags() {
     return tagCount[b] - tagCount[a];
   });
 }
+
+/**
+ * コンテンツのサムネイルURLを更新する。
+ * @param {string} targetId 対象コンテンツのID
+ * @param {string} thumbnailUrl 新しいサムネイルURL
+ * @returns {boolean} 更新成功したか
+ */
+function dbUpdateThumbnail(targetId, thumbnailUrl) {
+  var sheet = getMainSheet_();
+  var data = sheet.getDataRange().getValues();
+
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][0] === targetId) {
+      sheet.getRange(i + 1, 5).setValue(thumbnailUrl); // 5列目 = Thumbnail_URL
+      return true;
+    }
+  }
+  return false;
+}

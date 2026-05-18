@@ -570,5 +570,114 @@ img { display: block; max-width: 100%; }
   border-color: var(--accent);
 }
 
+/* === Thumbnail Editor === */
+.thumb-editor-overlay {
+  position: fixed; inset: 0;
+  background: var(--bg-overlay);
+  backdrop-filter: blur(8px);
+  z-index: 500;
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+.thumb-editor-overlay.active { opacity: 1; pointer-events: all; }
+.thumb-editor-panel {
+  width: 90vw; max-width: 640px; max-height: 85vh;
+  background: var(--bg-secondary);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-modal);
+  display: flex; flex-direction: column;
+  transform: scale(0.95);
+  transition: transform 0.3s ease;
+}
+.thumb-editor-overlay.active .thumb-editor-panel { transform: scale(1); }
+.thumb-editor-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.thumb-editor-title { font-size: 15px; font-weight: 600; }
+.thumb-editor-body {
+  padding: 16px 20px; overflow-y: auto; flex: 1;
+}
+.thumb-editor-section-label {
+  font-size: 12px; font-weight: 600; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: 0.5px;
+  margin-bottom: 8px; margin-top: 16px;
+}
+.thumb-editor-section-label:first-child { margin-top: 0; }
+.thumb-editor-current {
+  width: 100%; aspect-ratio: 16/9; border-radius: var(--radius-sm);
+  overflow: hidden; background: var(--bg-surface);
+  margin-bottom: 4px;
+}
+.thumb-editor-current img {
+  width: 100%; height: 100%; object-fit: cover;
+}
+.thumb-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+}
+.thumb-option {
+  position: relative; aspect-ratio: 16/9;
+  border-radius: var(--radius-sm);
+  overflow: hidden; cursor: pointer;
+  border: 2px solid transparent;
+  transition: var(--transition);
+  background: var(--bg-surface);
+}
+.thumb-option img {
+  width: 100%; height: 100%; object-fit: cover;
+}
+.thumb-option:hover { border-color: var(--border-hover); }
+.thumb-option.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-glow); }
+.thumb-option-label {
+  position: absolute; bottom: 0; left: 0; right: 0;
+  padding: 2px 6px;
+  background: rgba(0,0,0,0.7);
+  font-size: 10px; color: var(--text-secondary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.thumb-option-badge {
+  position: absolute; top: 4px; left: 4px;
+  padding: 1px 6px;
+  background: var(--accent);
+  border-radius: var(--radius-xs);
+  font-size: 9px; font-weight: 600; color: #fff;
+}
+.thumb-editor-footer {
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  display: flex; justify-content: flex-end; gap: 8px;
+  flex-shrink: 0;
+}
+.thumb-editor-loading {
+  display: flex; align-items: center; justify-content: center;
+  padding: 40px; color: var(--text-muted); font-size: 13px;
+  gap: 10px;
+}
+.thumb-editor-loading .loading-spinner { width: 24px; height: 24px; }
+
+/* Card thumbnail edit overlay */
+.card-thumb-edit-overlay {
+  position: absolute; inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; transition: opacity 0.2s ease;
+  cursor: pointer;
+}
+.card:hover .card-thumb-edit-overlay { opacity: 1; }
+.card-thumb-edit-icon {
+  padding: 6px 12px;
+  background: rgba(255,255,255,0.15);
+  backdrop-filter: blur(4px);
+  border-radius: 20px;
+  font-size: 12px; color: #fff; font-weight: 500;
+}
+
 </style>
+
 

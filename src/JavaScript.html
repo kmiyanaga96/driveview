@@ -22,7 +22,10 @@ var appState = {
   // Tag editor
   tagEditorTarget: null,
   tagEditorTags: [],
-  tagSuggestionIndex: -1
+  tagSuggestionIndex: -1,
+  // Thumb editor
+  thumbEditorTarget: null,
+  thumbEditorSelected: ''
 };
 
 // === Init ===
@@ -200,10 +203,19 @@ function bindEvents() {
     setTimeout(function () { hideSuggestions(); }, 200);
   });
 
+  // Thumb editor
+  document.getElementById('thumb-editor').addEventListener('click', function (e) {
+    if (e.target === this) closeThumbEditor();
+  });
+  document.getElementById('thumb-editor-close').addEventListener('click', closeThumbEditor);
+  document.getElementById('thumb-editor-cancel').addEventListener('click', closeThumbEditor);
+  document.getElementById('thumb-editor-save').addEventListener('click', saveThumbEditor);
+
   // Keyboard
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') {
-      if (document.getElementById('tag-editor').classList.contains('active')) closeTagEditor();
+      if (document.getElementById('thumb-editor').classList.contains('active')) closeThumbEditor();
+      else if (document.getElementById('tag-editor').classList.contains('active')) closeTagEditor();
       else if (appState.currentView === 'manga') closeMangaReader();
       else if (appState.currentView === 'video') closeVideoModal();
     }
@@ -242,9 +254,12 @@ function renderGallery() {
 
     html +=
       '<div class="card" data-index="' + idx + '" style="animation-delay:' + (idx * 0.03) + 's">' +
-        '<div class="card-thumb">' +
+        '<div class="card-thumb" data-target="' + escapeHtml(item.targetId) + '">' +
           '<img src="' + escapeHtml(item.thumbnailUrl || '') + '" alt="" loading="lazy" onerror="this.style.display=\'none\'">' +
           '<span class="card-type-badge ' + item.type.toLowerCase() + '">' + item.type + '</span>' +
+          '<div class="card-thumb-edit-overlay" data-target="' + escapeHtml(item.targetId) + '">' +
+            '<span class="card-thumb-edit-icon">🖼️ サムネイル変更</span>' +
+          '</div>' +
         '</div>' +
         '<div class="card-body">' +
           '<div class="card-title">' + escapeHtml(item.title) + '</div>' +
@@ -254,9 +269,18 @@ function renderGallery() {
   });
   grid.innerHTML = html;
 
-  // Card click events (thumb area only, not tag edit)
+  // Thumb edit overlay click (opens editor, stops card navigation)
+  grid.querySelectorAll('.card-thumb-edit-overlay').forEach(function (overlay) {
+    overlay.addEventListener('click', function (e) {
+      e.stopPropagation();
+      openThumbEditor(this.dataset.target);
+    });
+  });
+
+  // Card click events (thumb area, excluding overlay)
   grid.querySelectorAll('.card-thumb').forEach(function (thumb) {
-    thumb.addEventListener('click', function () {
+    thumb.addEventListener('click', function (e) {
+      if (e.target.closest('.card-thumb-edit-overlay')) return;
       var card = this.closest('.card');
       var idx = parseInt(card.dataset.index);
       var item = appState.filteredContent[idx];
@@ -737,6 +761,109 @@ function highlightSuggestion(items) {
 function hideSuggestions() {
   document.getElementById('tag-suggestions').classList.remove('visible');
   appState.tagSuggestionIndex = -1;
+}
+
+// ============================================================
+// Thumbnail Editor
+// ============================================================
+
+function openThumbEditor(targetId) {
+  var item = appState.allContent.find(function (c) { return c.targetId === targetId; });
+  if (!item) return;
+
+  appState.thumbEditorTarget = item;
+  appState.thumbEditorSelected = item.thumbnailUrl || '';
+
+  var body = document.getElementById('thumb-editor-body');
+  body.innerHTML = '<div class="thumb-editor-loading"><div class="loading-spinner"></div>サムネイル候補を取得中...</div>';
+
+  document.getElementById('thumb-editor').classList.add('active');
+
+  // Fetch suggestions from backend
+  google.script.run
+    .withSuccessHandler(function (data) { renderThumbEditor(data); })
+    .withFailureHandler(function (err) {
+      body.innerHTML = '<div class="thumb-editor-loading">取得に失敗しました</div>';
+      onError(err);
+    })
+    .getSuggestedThumbnails(targetId);
+}
+
+function closeThumbEditor() {
+  document.getElementById('thumb-editor').classList.remove('active');
+  appState.thumbEditorTarget = null;
+  appState.thumbEditorSelected = '';
+}
+
+function renderThumbEditor(data) {
+  var body = document.getElementById('thumb-editor-body');
+  var html = '';
+
+  // Current thumbnail
+  html += '<div class="thumb-editor-section-label">現在のサムネイル</div>';
+  if (data.current) {
+    html += '<div class="thumb-editor-current"><img src="' + escapeHtml(data.current) + '" onerror="this.parentElement.innerHTML=\'\u306a\u3057\'"></div>';
+  } else {
+    html += '<div class="thumb-editor-current" style="display:flex;align-items:center;justify-content:center;color:var(--text-muted)">未設定</div>';
+  }
+
+  // Drive auto thumbnail
+  if (data.driveThumbnail) {
+    html += '<div class="thumb-editor-section-label">DRIVE 自動生成</div>';
+    html += '<div class="thumb-grid">';
+    var sel = appState.thumbEditorSelected === data.driveThumbnail ? ' selected' : '';
+    html += '<div class="thumb-option' + sel + '" data-url="' + escapeHtml(data.driveThumbnail) + '">';
+    html += '<img src="' + escapeHtml(data.driveThumbnail) + '">';
+    html += '<span class="thumb-option-badge">自動</span>';
+    html += '</div></div>';
+  }
+
+  // Folder images
+  if (data.suggestions && data.suggestions.length > 0) {
+    html += '<div class="thumb-editor-section-label">同じフォルダの画像 (' + data.suggestions.length + '件)</div>';
+    html += '<div class="thumb-grid">';
+    data.suggestions.forEach(function (s) {
+      var sel = appState.thumbEditorSelected === s.url ? ' selected' : '';
+      html += '<div class="thumb-option' + sel + '" data-url="' + escapeHtml(s.url) + '">';
+      html += '<img src="' + escapeHtml(s.url) + '" loading="lazy">';
+      html += '<span class="thumb-option-label">' + escapeHtml(s.name) + '</span>';
+      html += '</div>';
+    });
+    html += '</div>';
+  }
+
+  if (!data.driveThumbnail && (!data.suggestions || data.suggestions.length === 0)) {
+    html += '<div class="thumb-editor-loading">サムネイル候補が見つかりません</div>';
+  }
+
+  body.innerHTML = html;
+
+  // Bind click events
+  body.querySelectorAll('.thumb-option').forEach(function (opt) {
+    opt.addEventListener('click', function () {
+      body.querySelectorAll('.thumb-option').forEach(function (o) { o.classList.remove('selected'); });
+      this.classList.add('selected');
+      appState.thumbEditorSelected = this.dataset.url;
+    });
+  });
+}
+
+function saveThumbEditor() {
+  if (!appState.thumbEditorTarget || !appState.thumbEditorSelected) return;
+
+  var targetId = appState.thumbEditorTarget.targetId;
+  var url = appState.thumbEditorSelected;
+
+  google.script.run
+    .withSuccessHandler(function () {
+      // Update local state
+      var item = appState.allContent.find(function (c) { return c.targetId === targetId; });
+      if (item) item.thumbnailUrl = url;
+      applyFilters();
+      closeThumbEditor();
+    })
+    .withFailureHandler(onError)
+    .updateThumbnail(targetId, url);
 }
 
 // ============================================================
