@@ -554,8 +554,8 @@ img { display: block; max-width: 100%; }
 }
 .tag-editor-btn.save:hover { background: var(--accent-hover); }
 
-/* Card tag edit button */
-.card-tag-edit {
+/* Card action buttons (Tag edit, Thumb edit) */
+.card-action-btn {
   font-size: 11px; padding: 2px 8px;
   background: rgba(255,255,255,0.05);
   color: var(--text-muted);
@@ -563,8 +563,9 @@ img { display: block; max-width: 100%; }
   cursor: pointer;
   transition: var(--transition);
   border: 1px dashed var(--border);
+  display: inline-flex; align-items: center; gap: 4px;
 }
-.card-tag-edit:hover {
+.card-action-btn:hover {
   background: var(--accent-glow);
   color: var(--accent-hover);
   border-color: var(--accent);
@@ -660,23 +661,6 @@ img { display: block; max-width: 100%; }
   gap: 10px;
 }
 .thumb-editor-loading .loading-spinner { width: 24px; height: 24px; }
-
-/* Card thumbnail edit overlay */
-.card-thumb-edit-overlay {
-  position: absolute; inset: 0;
-  background: rgba(0,0,0,0.6);
-  display: flex; align-items: center; justify-content: center;
-  opacity: 0; transition: opacity 0.2s ease;
-  cursor: pointer;
-}
-.card:hover .card-thumb-edit-overlay { opacity: 1; }
-.card-thumb-edit-icon {
-  padding: 6px 12px;
-  background: rgba(255,255,255,0.15);
-  backdrop-filter: blur(4px);
-  border-radius: 20px;
-  font-size: 12px; color: #fff; font-weight: 500;
-}
 
 /* Frame capture */
 .frame-capture-btn {

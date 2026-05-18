@@ -250,46 +250,28 @@ function renderGallery() {
         if (tag) tagChips += '<span class="card-tag">' + escapeHtml(tag) + '</span>';
       });
     }
-    tagChips += '<span class="card-tag-edit" data-target="' + escapeHtml(item.targetId) + '">✏️ タグ編集</span>';
 
     html +=
       '<div class="card" data-index="' + idx + '" style="animation-delay:' + (idx * 0.03) + 's">' +
-        '<div class="card-thumb" data-target="' + escapeHtml(item.targetId) + '">' +
+        '<div class="card-thumb" style="cursor:pointer;">' +
           '<img src="' + escapeHtml(item.thumbnailUrl || '') + '" alt="" loading="lazy" onerror="this.style.display=\'none\'">' +
           '<span class="card-type-badge ' + item.type.toLowerCase() + '">' + item.type + '</span>' +
-          '<div class="card-thumb-edit-overlay" data-target="' + escapeHtml(item.targetId) + '">' +
-            '<span class="card-thumb-edit-icon">🖼️ サムネイル変更</span>' +
-          '</div>' +
         '</div>' +
         '<div class="card-body">' +
-          '<div class="card-title">' + escapeHtml(item.title) + '</div>' +
+          '<div class="card-title" style="cursor:pointer;">' + escapeHtml(item.title) + '</div>' +
           '<div class="card-tags">' + tagChips + '</div>' +
+          '<div class="card-tags" style="margin-top: 8px;">' +
+            '<span class="card-action-btn tag-edit-btn" data-target="' + escapeHtml(item.targetId) + '">✏️ タグ</span>' +
+            '<span class="card-action-btn thumb-edit-btn" data-target="' + escapeHtml(item.targetId) + '">🖼️ サムネ</span>' +
+          '</div>' +
         '</div>' +
       '</div>';
   });
   grid.innerHTML = html;
 
-  // Thumb edit overlay click (opens editor, stops card navigation)
-  grid.querySelectorAll('.card-thumb-edit-overlay').forEach(function (overlay) {
-    overlay.addEventListener('click', function (e) {
-      e.stopPropagation();
-      openThumbEditor(this.dataset.target);
-    });
-  });
-
-  // Card click events (thumb area, excluding overlay)
-  grid.querySelectorAll('.card-thumb').forEach(function (thumb) {
-    thumb.addEventListener('click', function (e) {
-      if (e.target.closest('.card-thumb-edit-overlay')) return;
-      var card = this.closest('.card');
-      var idx = parseInt(card.dataset.index);
-      var item = appState.filteredContent[idx];
-      if (item.type === 'Video') openVideoModal(item);
-      else if (item.type === 'Manga') openMangaReader(item);
-    });
-  });
-  grid.querySelectorAll('.card-title').forEach(function (title) {
-    title.addEventListener('click', function () {
+  // Card click events (thumb and title navigate)
+  grid.querySelectorAll('.card-thumb, .card-title').forEach(function (el) {
+    el.addEventListener('click', function (e) {
       var card = this.closest('.card');
       var idx = parseInt(card.dataset.index);
       var item = appState.filteredContent[idx];
@@ -299,11 +281,18 @@ function renderGallery() {
   });
 
   // Tag edit button
-  grid.querySelectorAll('.card-tag-edit').forEach(function (btn) {
+  grid.querySelectorAll('.tag-edit-btn').forEach(function (btn) {
     btn.addEventListener('click', function (e) {
       e.stopPropagation();
-      var targetId = this.dataset.target;
-      openTagEditor(targetId);
+      openTagEditor(this.dataset.target);
+    });
+  });
+
+  // Thumb edit button
+  grid.querySelectorAll('.thumb-edit-btn').forEach(function (btn) {
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      openThumbEditor(this.dataset.target);
     });
   });
 }
