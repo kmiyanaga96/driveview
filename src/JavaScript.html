@@ -987,12 +987,30 @@ function captureFramesSequentially(video, timestamps, idx, frames, fill, status,
 
     try {
       var canvas = document.createElement('canvas');
-      canvas.width = Math.min(video.videoWidth, 640);
+      var targetWidth = Math.min(video.videoWidth, 400); // Reduce initial width for smaller size
+      canvas.width = targetWidth;
       canvas.height = Math.round(canvas.width * (video.videoHeight / video.videoWidth));
       var ctx = canvas.getContext('2d');
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-      var dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+      var quality = 0.8;
+      var dataUrl = canvas.toDataURL('image/jpeg', quality);
+
+      // スプレッドシートの1セルの文字数制限（50,000文字）に収まるよう動的に圧縮
+      while (dataUrl.length > 48000 && quality > 0.1) {
+        quality -= 0.1;
+        dataUrl = canvas.toDataURL('image/jpeg', quality);
+      }
+
+      // それでも超える場合はさらに解像度を落とす
+      if (dataUrl.length > 48000) {
+        targetWidth = 240;
+        canvas.width = targetWidth;
+        canvas.height = Math.round(canvas.width * (video.videoHeight / video.videoWidth));
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        dataUrl = canvas.toDataURL('image/jpeg', 0.5);
+      }
+
       var timeLabel = formatTime(timestamps[idx]);
 
       frames.push({ url: dataUrl, time: timeLabel });
