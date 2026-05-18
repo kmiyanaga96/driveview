@@ -871,9 +871,9 @@ function startFrameCapture(fileId) {
 
   google.script.run
     .withSuccessHandler(function (info) {
-      status.textContent = '動画ストリームに接続中...';
-      fill.style.width = '10%';
-      captureFramesDirectly(info, fill, status);
+      status.textContent = 'ダウンロード準備中...';
+      fill.style.width = '5%';
+      fetchVideoAndCapture(info, fill, status);
     })
     .withFailureHandler(function (err) {
       status.textContent = 'エラー: ' + (err.message || err);
@@ -883,16 +883,73 @@ function startFrameCapture(fileId) {
     .getVideoAccessInfo(fileId);
 }
 
-function captureFramesDirectly(info, fill, status) {
-  var videoUrl = 'https://www.googleapis.com/drive/v3/files/' + info.fileId + '?alt=media&access_token=' + info.token;
-  
+function fetchVideoAndCapture(info, fill, status) {
+  var url = 'https://www.googleapis.com/drive/v3/files/' + info.fileId + '?alt=media';
+
+  fetch(url, {
+    headers: { 'Authorization': 'Bearer ' + info.token }
+  })
+  .then(function (response) {
+    if (!response.ok) throw new Error('動画の取得に失敗 (' + response.status + ')');
+    
+    // Check if browser supports Streams API
+    if (!response.body) {
+      status.textContent = '動画をダウンロード中...';
+      return response.blob();
+    }
+
+    var reader = response.body.getReader();
+    var total = info.fileSize || 0;
+    var loaded = 0;
+    var chunks = [];
+
+    return new Promise(function(resolve, reject) {
+      function read() {
+        reader.read().then(function(result) {
+          if (result.done) {
+            status.textContent = '動画データを結合中...';
+            resolve(new Blob(chunks));
+            return;
+          }
+          chunks.push(result.value);
+          loaded += result.value.length;
+          
+          if (total > 0) {
+            var percent = Math.round((loaded / total) * 100);
+            var mbLoaded = (loaded / (1024 * 1024)).toFixed(1);
+            var mbTotal = (total / (1024 * 1024)).toFixed(1);
+            status.textContent = 'ダウンロード中: ' + mbLoaded + 'MB / ' + mbTotal + 'MB (' + percent + '%)';
+            fill.style.width = (5 + (percent * 0.45)) + '%'; // Progress from 5% to 50%
+          } else {
+            var mbLoaded = (loaded / (1024 * 1024)).toFixed(1);
+            status.textContent = 'ダウンロード中: ' + mbLoaded + 'MB';
+          }
+          read();
+        }).catch(reject);
+      }
+      read();
+    });
+  })
+  .then(function (blob) {
+    status.textContent = 'フレームを抽出準備中...';
+    var blobUrl = URL.createObjectURL(blob);
+    captureFramesFromBlob(blobUrl, fill, status);
+  })
+  .catch(function (err) {
+    status.textContent = 'エラー: ' + err.message;
+    var btn = document.getElementById('frame-capture-btn');
+    if (btn) { btn.disabled = false; btn.textContent = '🎬 再試行'; }
+  });
+}
+
+function captureFramesFromBlob(blobUrl, fill, status) {
   var video = document.createElement('video');
-  video.crossOrigin = 'anonymous'; // Important for canvas capture
   video.muted = true;
-  video.preload = 'metadata'; // Only fetch metadata initially
+  video.preload = 'auto';
 
   video.addEventListener('error', function () {
-    status.textContent = 'この動画形式はブラウザでのストリーミング抽出に対応していません';
+    URL.revokeObjectURL(blobUrl);
+    status.textContent = 'この動画形式はフレームキャプチャに対応していません';
     var btn = document.getElementById('frame-capture-btn');
     if (btn) { btn.disabled = false; btn.textContent = '🎬 再試行'; }
   });
@@ -901,11 +958,12 @@ function captureFramesDirectly(info, fill, status) {
     var duration = video.duration;
     if (!duration || !isFinite(duration)) {
       status.textContent = '動画の長さを取得できません';
+      URL.revokeObjectURL(blobUrl);
       return;
     }
 
-    status.textContent = '必要なフレームだけを抽出中...';
-    fill.style.width = '20%';
+    status.textContent = 'フレームを抽出中...';
+    fill.style.width = '50%';
 
     // Generate 10 random timestamps (5%~95% of duration)
     var timestamps = [];
@@ -915,26 +973,26 @@ function captureFramesDirectly(info, fill, status) {
     }
     timestamps.sort(function (a, b) { return a - b; });
 
-    captureFramesSequentially(video, timestamps, 0, [], fill, status);
+    captureFramesSequentially(video, timestamps, 0, [], fill, status, blobUrl);
   });
 
-  video.src = videoUrl;
+  video.src = blobUrl;
+  video.load();
 }
 
-function captureFramesSequentially(video, timestamps, idx, frames, fill, status) {
+function captureFramesSequentially(video, timestamps, idx, frames, fill, status, blobUrl) {
   if (idx >= timestamps.length) {
     // All frames captured
-    video.removeAttribute('src'); // Free memory
-    video.load();
+    URL.revokeObjectURL(blobUrl); // Free memory
     fill.style.width = '100%';
     status.textContent = '完了！ ' + frames.length + ' フレームを抽出しました';
     displayCapturedFrames(frames);
     return;
   }
 
-  var progress = 20 + (idx / timestamps.length) * 80;
+  var progress = 50 + (idx / timestamps.length) * 50;
   fill.style.width = progress + '%';
-  status.textContent = 'フレーム ' + (idx + 1) + ' / ' + timestamps.length + ' をストリーミング中...';
+  status.textContent = 'フレーム ' + (idx + 1) + ' / ' + timestamps.length + ' を抽出中...';
 
   video.currentTime = timestamps[idx];
 
@@ -957,7 +1015,7 @@ function captureFramesSequentially(video, timestamps, idx, frames, fill, status)
     }
 
     // Next frame
-    captureFramesSequentially(video, timestamps, idx + 1, frames, fill, status);
+    captureFramesSequentially(video, timestamps, idx + 1, frames, fill, status, blobUrl);
   });
 }
 
