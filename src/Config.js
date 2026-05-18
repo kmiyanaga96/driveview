@@ -14,8 +14,8 @@ function getConfig() {
   return {
     // ===== ユーザー設定必須 =====
     // Google Drive上のルートフォルダID (複数指定可)
-    VIDEO_FOLDER_IDS: ['YOUR_VIDEO_FOLDER_ID_HERE'],
-    MANGA_FOLDER_IDS: ['YOUR_MANGA_FOLDER_ID_HERE'],
+    VIDEO_FOLDER_IDS: ['1rkp6zzJ9OzqUdv7j_URM5hmHRYP1MB7u'],
+    MANGA_FOLDER_IDS: ['1FadY2gT40TKs_gpBiZBq3qZUVYs45_qZ'],
 
     // ===== 自動設定 (setupDatabase()で設定) =====
     SPREADSHEET_ID: props.getProperty('SPREADSHEET_ID') || '',
