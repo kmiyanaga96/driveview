@@ -9,7 +9,7 @@ var appState = {
   filteredContent: [],
   allTags: [],
   selectedTags: [],
-  selectedType: 'All',
+  selectedType: 'Video',
   searchQuery: '',
   currentView: 'gallery',
   currentItem: null,
@@ -131,15 +131,16 @@ function onContentLoaded(data) {
 
 function extractTags() {
   var tagSet = {};
+  var type = appState.selectedType;
   appState.allContent.forEach(function (item) {
-    if (item.tags) {
+    if (item.type === type && item.tags) {
       item.tags.split(',').forEach(function (t) {
         var tag = t.trim();
         if (tag) tagSet[tag] = (tagSet[tag] || 0) + 1;
       });
     }
   });
-  // 出現回数の多い順にソート
+  // Sort by frequency
   appState.allTags = Object.keys(tagSet).sort(function (a, b) {
     return tagSet[b] - tagSet[a];
   });
@@ -194,6 +195,14 @@ function bindEvents() {
       document.querySelectorAll('.type-tab').forEach(function (t) { t.classList.remove('active'); });
       this.classList.add('active');
       appState.selectedType = this.dataset.type;
+      
+      // Reset selected tag filters when switching tabs to avoid zero results
+      appState.selectedTags = [];
+      
+      // Re-extract tags and re-render the tag bar for the new type
+      extractTags();
+      renderTagBar();
+      
       applyFilters();
     });
   });
@@ -256,6 +265,9 @@ function bindEvents() {
 function renderGallery() {
   var grid = document.getElementById('gallery-grid');
   var stats = document.getElementById('gallery-stats');
+
+  // Dynamic grid setup for layout optimization
+  grid.dataset.viewType = appState.selectedType;
 
   stats.textContent = appState.filteredContent.length + ' 件のコンテンツ';
 
