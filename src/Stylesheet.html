@@ -762,6 +762,33 @@ img { display: block; max-width: 100%; }
   margin-top: 4px; text-align: center;
 }
 
+/* Mobile responsive header */
+@media (max-width: 600px) {
+  .header {
+    padding: 10px 16px;
+  }
+  .header-inner {
+    display: grid;
+    grid-template-areas: 
+      "logo tabs"
+      "search search";
+    grid-template-columns: auto 1fr;
+    gap: 12px;
+  }
+  .logo {
+    grid-area: logo;
+    font-size: 18px;
+  }
+  .type-tabs {
+    grid-area: tabs;
+    justify-self: end;
+  }
+  .search-container {
+    grid-area: search;
+    max-width: 100%;
+  }
+}
+
 </style>
 
 
