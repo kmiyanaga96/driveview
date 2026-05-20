@@ -103,3 +103,89 @@ function getVideoAccessInfo(fileId) {
     fileSize: fileSize
   };
 }
+
+/**
+ * サムネイル用画像をGoogle Driveに保存し、そのURLをスプレッドシートに保存する。
+ * @param {string} targetId 動画/漫画のID
+ * @param {string} base64Data 画像のBase64データURL (data:image/jpeg;base64,...)
+ * @returns {string} 保存されたサムネイルのリサイズ済みURL
+ */
+function uploadThumbnailToDrive(targetId, base64Data) {
+  try {
+    var config = getConfig();
+    var props = PropertiesService.getScriptProperties();
+    var folderId = props.getProperty('THUMBNAIL_FOLDER_ID');
+    var folder;
+
+    if (folderId) {
+      try {
+        folder = DriveApp.getFolderById(folderId);
+      } catch (e) {
+        Logger.log('Configured thumbnail folder not found: ' + e.message);
+      }
+    }
+
+    // フォルダがない場合は新規作成
+    if (!folder) {
+      folder = DriveApp.createFolder('DriveView_Thumbnails');
+      // 誰でも閲覧可能（リンク共有）に設定
+      folder.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+      props.setProperty('THUMBNAIL_FOLDER_ID', folder.getId());
+      Logger.log('Created new thumbnail folder: ' + folder.getId());
+    }
+
+    // Base64データをデコード
+    var matches = base64Data.match(/^data:(image\/[a-z]+);base64,(.+)$/);
+    if (!matches) {
+      throw new Error('Invalid base64 image format');
+    }
+    var contentType = matches[1];
+    var rawData = matches[2];
+    var decoded = Utilities.base64Decode(rawData);
+    var extension = contentType.split('/')[1] || 'jpg';
+    var fileName = 'thumb_' + targetId + '.' + extension;
+
+    var blob = Utilities.newBlob(decoded, contentType, fileName);
+
+    // 既存の同名サムネイルがあれば削除（重複防止）
+    var files = folder.getFilesByName(fileName);
+    while (files.hasNext()) {
+      var file = files.next();
+      file.setTrashed(true);
+    }
+
+    // 新規作成
+    var newFile = folder.createFile(blob);
+    newFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    
+    var fileId = newFile.getId();
+    var finalUrl = '';
+    
+    // Drive API を使って thumbnailLink を取得（リサイズに必要）
+    try {
+      var driveFile = Drive.Files.get(fileId, {
+        supportsAllDrives: true
+      });
+      if (driveFile.thumbnailLink) {
+        // resizeThumbnail_ を用いて grid 用サイズに置換
+        finalUrl = resizeThumbnail_(driveFile.thumbnailLink, config.THUMB_SIZE_GRID);
+      }
+    } catch (e) {
+      Logger.log('Failed to get thumbnailLink via Advanced Drive API: ' + e.message);
+    }
+    
+    if (!finalUrl) {
+      // フォールバック
+      finalUrl = 'https://docs.google.com/uc?export=view&id=' + fileId;
+    }
+
+    // スプレッドシートDBを更新
+    dbUpdateThumbnail(targetId, finalUrl);
+
+    return finalUrl;
+  } catch (e) {
+    Logger.log('uploadThumbnailToDrive error: ' + e.message);
+    throw e;
+  }
+}
+

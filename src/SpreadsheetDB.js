@@ -234,3 +234,25 @@ function dbUpdateThumbnail(targetId, thumbnailUrl) {
   }
   return false;
 }
+
+/**
+ * 既存のBase64サムネイルデータをクリーンアップ（空文字にリセット）するユーティリティ。
+ * スプレッドシートの肥大化を防ぎ、読み込みを高速化するために実行します。
+ */
+function clearLegacyBase64Thumbnails() {
+  var sheet = getMainSheet_();
+  var data = sheet.getDataRange().getValues();
+  var clearedCount = 0;
+
+  for (var i = 1; i < data.length; i++) {
+    var thumbUrl = data[i][4] ? String(data[i][4]) : '';
+    if (thumbUrl.indexOf('data:image') === 0) {
+      sheet.getRange(i + 1, 5).setValue(''); // 5列目(Thumbnail_URL)をクリア
+      clearedCount++;
+    }
+  }
+  
+  Logger.log('Cleared ' + clearedCount + ' legacy Base64 thumbnails.');
+  return clearedCount;
+}
+

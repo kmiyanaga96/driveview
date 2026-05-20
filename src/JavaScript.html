@@ -1065,7 +1065,7 @@ function saveThumbEditor() {
   var targetId = appState.thumbEditorTarget.targetId;
   var url = appState.thumbEditorSelected;
 
-  // Optimistic Update (Immediate UI Reflection)
+  // Optimistic Update (Immediate UI Reflection using Base64 dataURL)
   var item = appState.allContent.find(function (c) { return c.targetId === targetId; });
   if (item) item.thumbnailUrl = url;
 
@@ -1084,10 +1084,32 @@ function saveThumbEditor() {
 
   closeThumbEditor();
 
-  // Save to backend quietly in background
-  google.script.run
-    .withFailureHandler(onError)
-    .updateThumbnail(targetId, url);
+  // Save to backend
+  if (url.indexOf('data:image') === 0) {
+    // If it's a captured Base64 frame, upload to Drive in the background
+    google.script.run
+      .withSuccessHandler(function (finalUrl) {
+        // Once uploaded, silently swap the transient Base64 URL with the permanent Drive URL
+        if (item) item.thumbnailUrl = finalUrl;
+        if (cardIdx !== -1) {
+          var cardEl = document.querySelector('.card[data-index="' + cardIdx + '"]');
+          if (cardEl) {
+            var imgEl = cardEl.querySelector('.card-thumb img');
+            if (imgEl) {
+              imgEl.src = escapeHtml(finalUrl);
+            }
+          }
+        }
+        console.log('Thumbnail successfully uploaded to Drive: ' + finalUrl);
+      })
+      .withFailureHandler(onError)
+      .uploadThumbnailToDrive(targetId, url);
+  } else {
+    // Regular URL update
+    google.script.run
+      .withFailureHandler(onError)
+      .updateThumbnail(targetId, url);
+  }
 }
 
 // ============================================================
