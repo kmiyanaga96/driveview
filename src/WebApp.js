@@ -20,6 +20,16 @@ function doGet(e) {
 }
 
 /**
+ * Driveフルアクセス権限の承認を行うためのヘルパー関数。
+ * GASエディタから手動で1回実行すると、OAuthスコープの再承認ダイアログが表示される。
+ * 承認後は、Webアプリからのサムネイルアップロードが正常に動作するようになる。
+ */
+function authorizeDriveAccess() {
+  var root = DriveApp.getRootFolder();
+  Logger.log('Drive access authorized successfully. Root folder: ' + root.getName());
+}
+
+/**
  * HTML テンプレート内で部分ファイルをインクルードする。
  * 使用例: <?!= include('Stylesheet') ?>
  * @param {string} filename 拡張子なしのファイル名
