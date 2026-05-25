@@ -282,12 +282,12 @@ function renderGallery() {
 
   var html = '';
   appState.filteredContent.forEach(function (item, idx) {
-    var tagOverlay = '';
+    var tagHtml = '';
     if (item.tags) {
       var parsedTags = item.tags.split(',').map(function(t){return t.trim();}).filter(Boolean);
       parsedTags.sort(function(a, b){ return a.localeCompare(b, 'ja'); });
       parsedTags.forEach(function (tag) {
-        tagOverlay += '<span class="card-tag">' + escapeHtml(tag) + '</span>';
+        tagHtml += '<span class="card-tag">' + escapeHtml(tag) + '</span>';
       });
     }
 
@@ -297,11 +297,11 @@ function renderGallery() {
       '<div class="card" data-index="' + idx + '" data-type="' + item.type + '" style="animation-delay:' + Math.min(idx * 0.03, 0.3) + 's">' +
         '<div class="card-thumb" style="cursor:pointer;">' +
           '<img src="' + escapeHtml(item.thumbnailUrl || '') + '" alt="" loading="lazy" onerror="this.style.display=\'none\'">' +
-          (tagOverlay ? '<div class="card-tag-overlay">' + tagOverlay + '</div>' : '') +
         '</div>' +
         '<div class="card-body">' +
           '<div class="card-title" style="cursor:pointer;">' + escapeHtml(displayTitle) + '</div>' +
-          '<div class="card-tags" style="margin-top: 4px;">' +
+          '<div class="card-tags">' + tagHtml + '</div>' +
+          '<div class="card-actions">' +
             '<span class="card-action-btn tag-edit-btn" data-target="' + escapeHtml(item.targetId) + '">✏️ タグ</span>' +
             '<span class="card-action-btn thumb-edit-btn" data-target="' + escapeHtml(item.targetId) + '">🖼️ サムネ</span>' +
           '</div>' +
@@ -313,7 +313,6 @@ function renderGallery() {
   // Card click events (thumb and title navigate)
   grid.querySelectorAll('.card-thumb, .card-title').forEach(function (el) {
     el.addEventListener('click', function (e) {
-      if (e.target.closest('.card-tag-overlay')) return; // Don't navigate when clicking tag overlay
       var card = this.closest('.card');
       var idx = parseInt(card.dataset.index);
       var item = appState.filteredContent[idx];

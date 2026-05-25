@@ -252,28 +252,15 @@ img { display: block; max-width: 100%; }
 }
 .card-tags {
   display: flex; flex-wrap: wrap; gap: 4px;
+  margin-top: 6px;
+  min-height: 20px;
 }
 .card-tag {
-  font-size: 10px; padding: 1px 6px;
-  background: rgba(108, 92, 231, 0.12);
-  color: var(--accent-hover);
-  border-radius: 10px;
-}
-/* Tag overlay on card hover */
-.card-tag-overlay {
-  position: absolute; inset: 0;
-  background: linear-gradient(to top, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.4) 50%, transparent 100%);
-  display: flex; flex-wrap: wrap; align-content: flex-end;
-  gap: 4px; padding: 10px;
-  opacity: 0; transition: opacity 0.2s ease;
-  pointer-events: none;
-}
-.card:hover .card-tag-overlay { opacity: 1; }
-.card-tag-overlay .card-tag {
   font-size: 11px; padding: 2px 8px;
-  background: rgba(108, 92, 231, 0.35);
-  backdrop-filter: blur(4px);
-  color: #ddd;
+  background: rgba(108, 92, 231, 0.08);
+  color: var(--accent-hover);
+  border-radius: 6px;
+  font-weight: 500;
 }
 
 /* === Empty State === */
@@ -624,6 +611,12 @@ img { display: block; max-width: 100%; }
   color: #fff;
 }
 .tag-editor-btn.save:hover { background: var(--accent-hover); }
+
+.card-actions {
+  display: flex; gap: 6px; margin-top: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
 
 /* Card action buttons (Tag edit, Thumb edit) */
 .card-action-btn {
