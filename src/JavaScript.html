@@ -1059,7 +1059,6 @@ function displayCapturedFrames(frames) {
   frames.forEach(function (f) {
     html += '<div class="thumb-option" data-url="' + f.url + '">';
     html += '<img src="' + f.url + '">';
-    html += '<span class="thumb-option-label">' + f.time + '</span>';
     html += '</div>';
   });
   grid.innerHTML = html;
