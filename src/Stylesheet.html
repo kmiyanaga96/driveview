@@ -1,33 +1,33 @@
 <style>
 /* ============================================================
    DriveView - Stylesheet
-   YouTube-inspired dark theme with premium aesthetics
+   Google Material 3 light theme with clean aesthetics
    ============================================================ */
 
 /* Fonts loaded via <link> in index.html for non-blocking rendering */
 
-/* === Design Tokens === */
+/* === Design Tokens (Material 3 Light Theme) === */
 :root {
-  --bg-primary: #0a0a0f;
-  --bg-secondary: #12121a;
-  --bg-surface: #1a1a28;
-  --bg-surface-hover: #222236;
-  --bg-overlay: rgba(0, 0, 0, 0.85);
-  --accent: #6c5ce7;
-  --accent-glow: rgba(108, 92, 231, 0.25);
-  --accent-hover: #7d6ff0;
-  --accent-red: #e94560;
-  --text-primary: #eeeef2;
-  --text-secondary: #8888a4;
-  --text-muted: #555570;
-  --border: rgba(255, 255, 255, 0.06);
-  --border-hover: rgba(255, 255, 255, 0.12);
-  --shadow-card: 0 2px 12px rgba(0, 0, 0, 0.5);
-  --shadow-modal: 0 12px 60px rgba(0, 0, 0, 0.8);
-  --radius: 12px;
+  --bg-primary: #f8f9fa;
+  --bg-secondary: #ffffff;
+  --bg-surface: #f1f3f4;
+  --bg-surface-hover: #e8eaed;
+  --bg-overlay: rgba(32, 33, 36, 0.6);
+  --accent: #1a73e8; /* Google Blue */
+  --accent-glow: rgba(26, 115, 232, 0.12);
+  --accent-hover: #1557b0;
+  --accent-red: #d93025; /* Google Red */
+  --text-primary: #202124;
+  --text-secondary: #5f6368;
+  --text-muted: #80868b;
+  --border: #dadce0;
+  --border-hover: #bdc1c6;
+  --shadow-card: 0 1px 2px 0 rgba(60,64,67,0.3), 0 1px 3px 1px rgba(60,64,67,0.15);
+  --shadow-modal: 0 1px 3px 0 rgba(60,64,67,0.3), 0 4px 8px 3px rgba(60,64,67,0.15);
+  --radius: 16px;
   --radius-sm: 8px;
   --radius-xs: 4px;
-  --transition: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition: 0.15s cubic-bezier(0.4, 0, 0.2, 1);
   --font: 'Inter', 'Noto Sans JP', -apple-system, sans-serif;
 }
 
@@ -107,7 +107,7 @@ img { display: block; max-width: 100%; }
 /* === Header === */
 .header {
   position: sticky; top: 0; z-index: 100;
-  background: rgba(10, 10, 15, 0.92);
+  background: rgba(255, 255, 255, 0.95);
   backdrop-filter: blur(20px);
   border-bottom: 1px solid var(--border);
   padding: 12px 24px;
@@ -218,16 +218,16 @@ img { display: block; max-width: 100%; }
   border: 1px solid var(--border);
   cursor: pointer;
   transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
-  animation: fadeInUp 0.4s ease backwards;
+  animation: fadeIn 0.15s ease backwards;
   will-change: transform;
 }
 .card:hover {
   border-color: var(--border-hover);
   box-shadow: var(--shadow-card);
 }
-@keyframes fadeInUp {
-  from { opacity: 0; transform: translateY(16px); }
-  to { opacity: 1; transform: translateY(0); }
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 .card-thumb {
   position: relative; width: 100%;
@@ -332,7 +332,7 @@ img { display: block; max-width: 100%; }
 .manga-topbar {
   display: flex; align-items: center; justify-content: space-between;
   padding: 10px 20px;
-  background: rgba(10, 10, 15, 0.95);
+  background: rgba(255, 255, 255, 0.95);
   backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--border);
   z-index: 10; flex-shrink: 0;
