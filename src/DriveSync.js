@@ -71,6 +71,19 @@ function setupSyncTrigger() {
   Logger.log('Sync trigger set: every 1 hour');
 }
 
+/**
+ * 全コンテンツを強制的に再同期する。
+ * lastSyncをリセットしてから同期を実行する。
+ * 漫画サムネイルが消えた場合などに手動で実行する。
+ */
+function forceFullSync() {
+  var config = getConfig();
+  var props = PropertiesService.getScriptProperties();
+  props.deleteProperty(config.LAST_SYNC_KEY);
+  Logger.log('Last sync timestamp cleared. Starting full sync...');
+  syncDriveContent();
+}
+
 // ============================================================
 // 内部関数
 // ============================================================

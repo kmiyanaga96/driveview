@@ -127,7 +127,7 @@ img { display: block; max-width: 100%; }
 
 /* === Search === */
 .search-container {
-  flex: 1; max-width: 600px; position: relative;
+  flex: 1; min-width: 120px; max-width: 600px; position: relative;
 }
 .search-input {
   width: 100%; padding: 10px 16px 10px 42px;
@@ -297,8 +297,6 @@ img { display: block; max-width: 100%; }
 .modal-overlay.active { opacity: 1; pointer-events: all; }
 .modal-content {
   width: 90vw; max-width: 1100px;
-  max-height: 95vh;
-  display: flex; flex-direction: column;
   background: var(--bg-secondary);
   border-radius: var(--radius);
   overflow: hidden;
@@ -325,12 +323,11 @@ img { display: block; max-width: 100%; }
 .modal-close:hover { background: var(--bg-surface-hover); color: var(--text-primary); }
 .modal-iframe-wrap {
   position: relative; width: 100%;
-  aspect-ratio: 16/9;
-  flex-shrink: 1;
-  min-height: 0;
+  padding-bottom: 56.25%; /* 16:9 fallback */
+  overflow: hidden;
 }
 .modal-iframe-wrap iframe {
-  position: absolute; inset: 0;
+  position: absolute; top: 0; left: 0;
   width: 100%; height: 100%; border: none;
 }
 
@@ -768,23 +765,18 @@ img { display: block; max-width: 100%; }
 
 /* Mobile responsive */
 @media (max-width: 600px) {
-  /* Header: stack into two rows */
+  /* Header: logo + tabs on row 1, search on row 2 */
   .header {
     padding: 10px 12px;
   }
   .header-inner {
     flex-wrap: wrap;
-    gap: 10px;
+    gap: 8px;
   }
   .logo {
     font-size: 17px;
   }
-  .type-tabs {
-    order: 1;
-    margin-left: auto;
-  }
   .search-container {
-    order: 2;
     flex: 0 0 100%;
     max-width: 100%;
   }
@@ -804,12 +796,12 @@ img { display: block; max-width: 100%; }
     padding: 16px 12px;
   }
 
-  /* Video modal: full-width, no rounded corners */
+  /* Video modal: full-screen style */
   .modal-content {
     width: 100vw;
     max-width: 100vw;
-    border-radius: 0;
     max-height: 100vh;
+    border-radius: 0;
   }
   .modal-header {
     padding: 10px 14px;
