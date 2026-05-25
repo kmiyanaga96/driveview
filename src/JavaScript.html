@@ -1009,28 +1009,28 @@ function captureFramesSequentially(video, timestamps, idx, frames, fill, status,
 
     try {
       var canvas = document.createElement('canvas');
-      var targetWidth = Math.min(video.videoWidth, 400); // Reduce initial width for smaller size
+      var targetWidth = Math.min(video.videoWidth, 320); // Resize to 320px width for 10KB size limit
       canvas.width = targetWidth;
       canvas.height = Math.round(canvas.width * (video.videoHeight / video.videoWidth));
       var ctx = canvas.getContext('2d');
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-      var quality = 0.8;
+      var quality = 0.6; // High quality target around 10KB
       var dataUrl = canvas.toDataURL('image/jpeg', quality);
 
-      // スプレッドシートの1セルの文字数制限（50,000文字）に収まるよう動的に圧縮
-      while (dataUrl.length > 48000 && quality > 0.1) {
-        quality -= 0.1;
+      // Compress to fit around 10KB limit (approx 15000 characters)
+      while (dataUrl.length > 15000 && quality > 0.1) {
+        quality -= 0.05;
         dataUrl = canvas.toDataURL('image/jpeg', quality);
       }
 
-      // それでも超える場合はさらに解像度を落とす
-      if (dataUrl.length > 48000) {
-        targetWidth = 240;
+      // Fallback to smaller width if still exceeding 10KB
+      if (dataUrl.length > 15000) {
+        targetWidth = 200;
         canvas.width = targetWidth;
         canvas.height = Math.round(canvas.width * (video.videoHeight / video.videoWidth));
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        dataUrl = canvas.toDataURL('image/jpeg', 0.5);
+        dataUrl = canvas.toDataURL('image/jpeg', 0.4);
       }
 
       var timeLabel = formatTime(timestamps[idx]);
@@ -1097,31 +1097,13 @@ function saveThumbEditor() {
   closeThumbEditor();
 
   // Save to backend
-  if (url.indexOf('data:image') === 0) {
-    // If it's a captured Base64 frame, upload to Drive in the background
-    google.script.run
-      .withSuccessHandler(function (finalUrl) {
-        // Once uploaded, silently swap the transient Base64 URL with the permanent Drive URL
-        if (item) item.thumbnailUrl = finalUrl;
-        if (cardIdx !== -1) {
-          var cardEl = document.querySelector('.card[data-index="' + cardIdx + '"]');
-          if (cardEl) {
-            var imgEl = cardEl.querySelector('.card-thumb img');
-            if (imgEl) {
-              imgEl.src = escapeHtml(finalUrl);
-            }
-          }
-        }
-        console.log('Thumbnail successfully uploaded to Drive: ' + finalUrl);
-      })
-      .withFailureHandler(onError)
-      .uploadThumbnailToDrive(targetId, url);
-  } else {
-    // Regular URL update
-    google.script.run
-      .withFailureHandler(onError)
-      .updateThumbnail(targetId, url);
-  }
+  // Save to backend directly to spreadsheet (both Base64 data and normal URLs)
+  google.script.run
+    .withSuccessHandler(function () {
+      console.log('Thumbnail successfully saved: ' + targetId);
+    })
+    .withFailureHandler(onError)
+    .updateThumbnail(targetId, url);
 }
 
 // ============================================================
