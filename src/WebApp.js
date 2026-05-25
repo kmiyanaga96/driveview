@@ -125,47 +125,23 @@ function uploadThumbnailToDrive(targetId, base64Data) {
     var config = getConfig();
     var props = PropertiesService.getScriptProperties();
     var folderId = props.getProperty('THUMBNAIL_FOLDER_ID');
-    var folderExists = false;
+    var folder;
 
     if (folderId) {
       try {
-        var folderMeta = Drive.Files.get(folderId, {
-          supportsAllDrives: true
-        });
-        if (folderMeta && !folderMeta.trashed) {
-          folderExists = true;
-        }
+        folder = DriveApp.getFolderById(folderId);
       } catch (e) {
-        Logger.log('Configured thumbnail folder not found or inaccessible: ' + e.message);
+        Logger.log('Configured thumbnail folder not found: ' + e.message);
       }
     }
 
     // フォルダがない場合は新規作成
-    if (!folderExists) {
-      var folderMetadata = {
-        name: 'DriveView_Thumbnails',
-        mimeType: 'application/vnd.google-apps.folder'
-      };
-      var newFolder = Drive.Files.create(folderMetadata, {
-        fields: 'id',
-        supportsAllDrives: true
-      });
-      folderId = newFolder.id;
-      
+    if (!folder) {
+      folder = DriveApp.createFolder('DriveView_Thumbnails');
       // 誰でも閲覧可能（リンク共有）に設定
-      try {
-        Drive.Permissions.create({
-          role: 'reader',
-          type: 'anyone'
-        }, folderId, {
-          supportsAllDrives: true
-        });
-      } catch (permissionError) {
-        Logger.log('Failed to set public permission on folder: ' + permissionError.message);
-      }
-      
-      props.setProperty('THUMBNAIL_FOLDER_ID', folderId);
-      Logger.log('Created new thumbnail folder: ' + folderId);
+      folder.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+      props.setProperty('THUMBNAIL_FOLDER_ID', folder.getId());
+      Logger.log('Created new thumbnail folder: ' + folder.getId());
     }
 
     // Base64データをデコード
@@ -182,55 +158,30 @@ function uploadThumbnailToDrive(targetId, base64Data) {
     var blob = Utilities.newBlob(decoded, contentType, fileName);
 
     // 既存の同名サムネイルがあれば削除（重複防止）
-    try {
-      var q = "name = '" + fileName + "' and '" + folderId + "' in parents and trashed = false";
-      var listResponse = Drive.Files.list({
-        q: q,
-        fields: 'files(id)',
-        supportsAllDrives: true,
-        includeItemsFromAllDrives: true
-      });
-      if (listResponse.files && listResponse.files.length > 0) {
-        listResponse.files.forEach(function (file) {
-          try {
-            Drive.Files.delete(file.id);
-          } catch (deleteError) {
-            Logger.log('Failed to delete existing thumbnail ' + file.id + ': ' + deleteError.message);
-          }
-        });
-      }
-    } catch (e) {
-      Logger.log('Error checking existing thumbnails: ' + e.message);
+    var files = folder.getFilesByName(fileName);
+    while (files.hasNext()) {
+      var file = files.next();
+      file.setTrashed(true);
     }
 
     // 新規作成
-    var fileMetadata = {
-      name: fileName,
-      parents: [folderId]
-    };
-    var newFile = Drive.Files.create(fileMetadata, blob, {
-      fields: 'id,thumbnailLink',
-      supportsAllDrives: true
-    });
+    var newFile = folder.createFile(blob);
+    newFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
     
-    var fileId = newFile.id;
-    
-    // 個別に共有設定を追加
-    try {
-      Drive.Permissions.create({
-        role: 'reader',
-        type: 'anyone'
-      }, fileId, {
-        supportsAllDrives: true
-      });
-    } catch (e) {
-      Logger.log('Failed to set public permission on file: ' + e.message);
-    }
-    
+    var fileId = newFile.getId();
     var finalUrl = '';
     
-    if (newFile.thumbnailLink) {
-      finalUrl = resizeThumbnail_(newFile.thumbnailLink, config.THUMB_SIZE_GRID);
+    // Drive API を使って thumbnailLink を取得（リサイズに必要）
+    try {
+      var driveFile = Drive.Files.get(fileId, {
+        supportsAllDrives: true
+      });
+      if (driveFile.thumbnailLink) {
+        // resizeThumbnail_ を用いて grid 用サイズに置換
+        finalUrl = resizeThumbnail_(driveFile.thumbnailLink, config.THUMB_SIZE_GRID);
+      }
+    } catch (e) {
+      Logger.log('Failed to get thumbnailLink via Advanced Drive API: ' + e.message);
     }
     
     if (!finalUrl) {
