@@ -140,36 +140,55 @@ function dbBatchUpsertContent(items) {
   if (!items || items.length === 0) return;
 
   var sheet = getMainSheet_();
-  var data = sheet.getDataRange().getValues();
+  var lastRow = sheet.getLastRow();
+  
+  // Retrieve existing sheet data or fall back to header if empty
+  var data = lastRow > 0 ? sheet.getRange(1, 1, lastRow, 6).getValues() : [['Target_ID', 'Type', 'Title', 'Tags', 'Thumbnail_URL', 'WebView_URL']];
 
-  // 既存データのインデックスマップ
+  // Map to track row indices by Target_ID
   var idxMap = {};
   for (var i = 1; i < data.length; i++) {
-    idxMap[data[i][0]] = i + 1; // 1-indexed row number
+    idxMap[data[i][0]] = i;
   }
 
-  var toAppend = [];
+  var isChanged = false;
 
   items.forEach(function (item) {
     var rowValues = [
-      item.targetId, item.type, item.title,
-      item.tags, item.thumbnailUrl, item.webViewUrl
+      item.targetId,
+      item.type,
+      item.title,
+      item.tags,
+      item.thumbnailUrl,
+      item.webViewUrl
     ];
 
-    if (idxMap[item.targetId]) {
-      // 既存行を更新
-      sheet.getRange(idxMap[item.targetId], 1, 1, 6).setValues([rowValues]);
+    var idx = idxMap[item.targetId];
+    if (idx !== undefined) {
+      // Memory compare to check for differences
+      var current = data[idx];
+      var diff = false;
+      for (var col = 0; col < 6; col++) {
+        if (current[col] !== rowValues[col]) {
+          diff = true;
+          break;
+        }
+      }
+      if (diff) {
+        data[idx] = rowValues;
+        isChanged = true;
+      }
     } else {
-      toAppend.push(rowValues);
+      // Append in memory
+      data.push(rowValues);
+      isChanged = true;
     }
   });
 
-  // 新規行を一括追加
-  if (toAppend.length > 0) {
-    sheet.getRange(
-      sheet.getLastRow() + 1, 1,
-      toAppend.length, 6
-    ).setValues(toAppend);
+  // Perform a single batch write if there are changes
+  if (isChanged) {
+    sheet.getRange(1, 1, data.length, 6).setValues(data);
+    Logger.log('dbBatchUpsertContent: Updated spreadsheet database (Total: ' + data.length + ' rows)');
   }
 }
 
