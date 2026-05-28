@@ -212,15 +212,21 @@ function getMangaFirstThumbnail_(folderId, config) {
 
     var response = Drive.Files.list({
       q: "(" + mimeQuery + ") and '" + folderId + "' in parents and trashed=false",
-      fields: 'files(thumbnailLink)',
+      fields: 'files(id,thumbnailLink)',
       pageSize: 1,
       orderBy: 'name',
       supportsAllDrives: true,
       includeItemsFromAllDrives: true
     });
 
-    if (response.files && response.files.length > 0 && response.files[0].thumbnailLink) {
-      return resizeThumbnail_(response.files[0].thumbnailLink, config.THUMB_SIZE_GRID);
+    if (response.files && response.files.length > 0) {
+      var file = response.files[0];
+      // Use thumbnailLink with custom size if available
+      if (file.thumbnailLink) {
+        return resizeThumbnail_(file.thumbnailLink, config.THUMB_SIZE_GRID);
+      }
+      // Fallback: construct a direct thumbnail URL from file ID
+      return 'https://drive.google.com/thumbnail?id=' + file.id + '&sz=w400';
     }
   } catch (e) {
     Logger.log('Failed to get manga thumbnail for ' + folderId + ': ' + e.message);

@@ -165,8 +165,20 @@ function dbBatchUpsertContent(items) {
 
     var idx = idxMap[item.targetId];
     if (idx !== undefined) {
-      // Memory compare to check for differences
       var current = data[idx];
+
+      // Preserve user-set thumbnail (Base64 data URL or custom URL)
+      // during sync when incoming URL is a Drive API thumbnailLink
+      var existingThumb = current[4] ? String(current[4]) : '';
+      var incomingThumb = item.thumbnailUrl || '';
+      var isExistingCustom = existingThumb.indexOf('data:') === 0;
+      var isIncomingDriveApi = incomingThumb.indexOf('lh3.googleusercontent.com') !== -1 ||
+                               incomingThumb === '';
+      if (isExistingCustom && isIncomingDriveApi) {
+        rowValues[4] = existingThumb; // Keep user-set thumbnail
+      }
+
+      // Memory compare to check for differences
       var diff = false;
       for (var col = 0; col < 6; col++) {
         if (current[col] !== rowValues[col]) {
