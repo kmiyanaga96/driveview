@@ -12,11 +12,12 @@
  */
 function getChapters(targetId) {
   var sheet = getChaptersSheet_();
-  var data = sheet.getDataRange().getValues();
-  if (data.length <= 1) return [];
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
 
+  var data = sheet.getRange(2, 1, lastRow - 1, 4).getValues();
   var chapters = [];
-  for (var i = 1; i < data.length; i++) {
+  for (var i = 0; i < data.length; i++) {
     if (data[i][1] === targetId) {
       chapters.push({
         chapterId: data[i][0],
@@ -27,7 +28,6 @@ function getChapters(targetId) {
     }
   }
 
-  // position 昇順ソート
   chapters.sort(function (a, b) { return a.position - b.position; });
   return chapters;
 }
@@ -55,18 +55,21 @@ function addChapter(targetId, position, label) {
 
 /**
  * チャプターを削除する。
+ * TextFinder で対象行を直接特定する。
  * @param {string} chapterId 削除対象のChapter_ID
  * @returns {boolean} 削除成功したか
  */
 function deleteChapter(chapterId) {
   var sheet = getChaptersSheet_();
-  var data = sheet.getDataRange().getValues();
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return false;
 
-  for (var i = 1; i < data.length; i++) {
-    if (data[i][0] === chapterId) {
-      sheet.deleteRow(i + 1);
-      return true;
-    }
-  }
-  return false;
+  var match = sheet.getRange(2, 1, lastRow - 1, 1)
+    .createTextFinder(String(chapterId))
+    .matchEntireCell(true)
+    .findNext();
+  if (!match) return false;
+
+  sheet.deleteRow(match.getRow());
+  return true;
 }

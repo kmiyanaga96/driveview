@@ -48,19 +48,25 @@ function setupDatabase() {
 }
 
 // ============================================================
-// ヘルパー
+// ヘルパー (リクエストスコープのメモ化)
 // ============================================================
+
+var _ssCache = null;
+var _mainSheetCache = null;
+var _chaptersSheetCache = null;
 
 /**
  * スプレッドシートを取得する。
  * @returns {GoogleAppsScript.Spreadsheet.Spreadsheet}
  */
 function getSpreadsheet_() {
+  if (_ssCache) return _ssCache;
   var config = getConfig();
   if (!config.SPREADSHEET_ID) {
     throw new Error('Spreadsheet not configured. Run setupDatabase() first.');
   }
-  return SpreadsheetApp.openById(config.SPREADSHEET_ID);
+  _ssCache = SpreadsheetApp.openById(config.SPREADSHEET_ID);
+  return _ssCache;
 }
 
 /**
@@ -68,7 +74,9 @@ function getSpreadsheet_() {
  * @returns {GoogleAppsScript.Spreadsheet.Sheet}
  */
 function getMainSheet_() {
-  return getSpreadsheet_().getSheetByName(getConfig().MAIN_SHEET);
+  if (_mainSheetCache) return _mainSheetCache;
+  _mainSheetCache = getSpreadsheet_().getSheetByName(getConfig().MAIN_SHEET);
+  return _mainSheetCache;
 }
 
 /**
@@ -76,7 +84,27 @@ function getMainSheet_() {
  * @returns {GoogleAppsScript.Spreadsheet.Sheet}
  */
 function getChaptersSheet_() {
-  return getSpreadsheet_().getSheetByName(getConfig().CHAPTERS_SHEET);
+  if (_chaptersSheetCache) return _chaptersSheetCache;
+  _chaptersSheetCache = getSpreadsheet_().getSheetByName(getConfig().CHAPTERS_SHEET);
+  return _chaptersSheetCache;
+}
+
+/**
+ * Target_ID を行番号にマップしたインデックスを返す。
+ * 1列のみ読み出すことで全列読み出しのコストを避ける。
+ * @returns {Object<string, number>} {targetId: sheetRow}
+ */
+function buildMainIndex_() {
+  var sheet = getMainSheet_();
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return {};
+  var ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+  var map = {};
+  for (var i = 0; i < ids.length; i++) {
+    var id = ids[i][0];
+    if (id) map[id] = i + 2;
+  }
+  return map;
 }
 
 // ============================================================
@@ -89,72 +117,44 @@ function getChaptersSheet_() {
  */
 function dbGetAllContent() {
   var sheet = getMainSheet_();
-  var data = sheet.getDataRange().getValues();
-  if (data.length <= 1) return [];
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
 
-  var rows = data.slice(1); // ヘッダー除去
-  return rows.map(function (row) {
-    return {
+  var rows = sheet.getRange(2, 1, lastRow - 1, 6).getValues();
+  var result = [];
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    if (!row[0]) continue;
+    result.push({
       targetId: row[0],
       type: row[1],
       title: row[2],
       tags: row[3] ? String(row[3]) : '',
       thumbnailUrl: row[4],
       webViewUrl: row[5] || ''
-    };
-  });
-}
-
-/**
- * コンテンツをUPSERT（既存なら更新、なければ追加）。
- * @param {Object} item - {targetId, type, title, tags, thumbnailUrl, webViewUrl}
- */
-function dbUpsertContent(item) {
-  var sheet = getMainSheet_();
-  var data = sheet.getDataRange().getValues();
-
-  for (var i = 1; i < data.length; i++) {
-    if (data[i][0] === item.targetId) {
-      // 更新
-      var row = i + 1;
-      sheet.getRange(row, 1, 1, 6).setValues([[
-        item.targetId, item.type, item.title,
-        item.tags, item.thumbnailUrl, item.webViewUrl
-      ]]);
-      return;
-    }
+    });
   }
-
-  // 新規追加
-  sheet.appendRow([
-    item.targetId, item.type, item.title,
-    item.tags, item.thumbnailUrl, item.webViewUrl
-  ]);
+  return result;
 }
 
 /**
  * 複数コンテンツを一括UPSERT（バッチ最適化）。
+ * 既存行は個別に更新、新規行は末尾に一括追加する。
  * @param {Array<Object>} items
  */
 function dbBatchUpsertContent(items) {
   if (!items || items.length === 0) return;
 
   var sheet = getMainSheet_();
+  var idxMap = buildMainIndex_();
   var lastRow = sheet.getLastRow();
-  
-  // Retrieve existing sheet data or fall back to header if empty
-  var data = lastRow > 0 ? sheet.getRange(1, 1, lastRow, 6).getValues() : [['Target_ID', 'Type', 'Title', 'Tags', 'Thumbnail_URL', 'WebView_URL']];
 
-  // Map to track row indices by Target_ID
-  var idxMap = {};
-  for (var i = 1; i < data.length; i++) {
-    idxMap[data[i][0]] = i;
-  }
+  var newRows = [];
+  var updatedCount = 0;
 
-  var isChanged = false;
-
-  items.forEach(function (item) {
-    var rowValues = [
+  for (var i = 0; i < items.length; i++) {
+    var item = items[i];
+    var values = [
       item.targetId,
       item.type,
       item.title,
@@ -162,34 +162,23 @@ function dbBatchUpsertContent(items) {
       item.thumbnailUrl,
       item.webViewUrl
     ];
-
-    var idx = idxMap[item.targetId];
-    if (idx !== undefined) {
-      // Memory compare to check for differences
-      var current = data[idx];
-      var diff = false;
-      for (var col = 0; col < 6; col++) {
-        if (current[col] !== rowValues[col]) {
-          diff = true;
-          break;
-        }
-      }
-      if (diff) {
-        data[idx] = rowValues;
-        isChanged = true;
-      }
+    var row = idxMap[item.targetId];
+    if (row) {
+      sheet.getRange(row, 1, 1, 6).setValues([values]);
+      updatedCount++;
     } else {
-      // Append in memory
-      data.push(rowValues);
-      isChanged = true;
+      newRows.push(values);
     }
-  });
-
-  // Perform a single batch write if there are changes
-  if (isChanged) {
-    sheet.getRange(1, 1, data.length, 6).setValues(data);
-    Logger.log('dbBatchUpsertContent: Updated spreadsheet database (Total: ' + data.length + ' rows)');
   }
+
+  if (newRows.length > 0) {
+    sheet.getRange(lastRow + 1, 1, newRows.length, 6).setValues(newRows);
+  }
+
+  Logger.log(
+    'dbBatchUpsertContent: updated=' + updatedCount +
+    ', appended=' + newRows.length
+  );
 }
 
 /**
@@ -199,40 +188,10 @@ function dbBatchUpsertContent(items) {
  * @returns {boolean} 更新成功したか
  */
 function dbUpdateTags(targetId, tags) {
-  var sheet = getMainSheet_();
-  var data = sheet.getDataRange().getValues();
-
-  for (var i = 1; i < data.length; i++) {
-    if (data[i][0] === targetId) {
-      sheet.getRange(i + 1, 4).setValue(tags); // 4列目 = Tags
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * 全コンテンツから一意なタグ一覧を取得する（サジェスト用）。
- * @returns {Array<string>} ユニークなタグの配列（出現回数降順）
- */
-function dbGetAllTags() {
-  var sheet = getMainSheet_();
-  var data = sheet.getDataRange().getValues();
-  var tagCount = {};
-
-  for (var i = 1; i < data.length; i++) {
-    var tagsStr = data[i][3] ? String(data[i][3]) : '';
-    if (tagsStr) {
-      tagsStr.split(',').forEach(function (t) {
-        var tag = t.trim();
-        if (tag) tagCount[tag] = (tagCount[tag] || 0) + 1;
-      });
-    }
-  }
-
-  return Object.keys(tagCount).sort(function (a, b) {
-    return tagCount[b] - tagCount[a];
-  });
+  var row = findRowByTargetId_(getMainSheet_(), targetId);
+  if (!row) return false;
+  getMainSheet_().getRange(row, 4).setValue(tags); // 4列目 = Tags
+  return true;
 }
 
 /**
@@ -242,15 +201,54 @@ function dbGetAllTags() {
  * @returns {boolean} 更新成功したか
  */
 function dbUpdateThumbnail(targetId, thumbnailUrl) {
-  var sheet = getMainSheet_();
-  var data = sheet.getDataRange().getValues();
-
-  for (var i = 1; i < data.length; i++) {
-    if (data[i][0] === targetId) {
-      sheet.getRange(i + 1, 5).setValue(thumbnailUrl); // 5列目 = Thumbnail_URL
-      return true;
-    }
-  }
-  return false;
+  var row = findRowByTargetId_(getMainSheet_(), targetId);
+  if (!row) return false;
+  getMainSheet_().getRange(row, 5).setValue(thumbnailUrl); // 5列目 = Thumbnail_URL
+  return true;
 }
 
+/**
+ * Target_ID 列から該当行番号を見つける。
+ * TextFinder により Apps Script 側でのインデックススキャンに任せる。
+ * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet
+ * @param {string} targetId
+ * @returns {number|null} 行番号（1-indexed）
+ */
+function findRowByTargetId_(sheet, targetId) {
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return null;
+  var match = sheet.getRange(2, 1, lastRow - 1, 1)
+    .createTextFinder(String(targetId))
+    .matchEntireCell(true)
+    .findNext();
+  return match ? match.getRow() : null;
+}
+
+/**
+ * 全コンテンツから一意なタグ一覧を取得する（サジェスト用）。
+ * 現在フロントエンドは appState から算出するためほぼ未使用だが、
+ * 互換のため残す。
+ * @returns {Array<string>} ユニークなタグの配列（出現回数降順）
+ */
+function dbGetAllTags() {
+  var sheet = getMainSheet_();
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+
+  var tagsCol = sheet.getRange(2, 4, lastRow - 1, 1).getValues();
+  var tagCount = {};
+
+  for (var i = 0; i < tagsCol.length; i++) {
+    var tagsStr = tagsCol[i][0] ? String(tagsCol[i][0]) : '';
+    if (!tagsStr) continue;
+    var parts = tagsStr.split(',');
+    for (var j = 0; j < parts.length; j++) {
+      var tag = parts[j].trim();
+      if (tag) tagCount[tag] = (tagCount[tag] || 0) + 1;
+    }
+  }
+
+  return Object.keys(tagCount).sort(function (a, b) {
+    return tagCount[b] - tagCount[a];
+  });
+}

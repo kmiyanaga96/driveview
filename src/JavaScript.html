@@ -25,15 +25,62 @@ var appState = {
   tagSuggestionIndex: -1,
   // Thumb editor
   thumbEditorTarget: null,
-  thumbEditorSelected: ''
+  thumbEditorSelected: '',
+  // SWR: 楽観更新が走った後はサーバの古い応答で上書きしない
+  hasLocalMutations: false
 };
+
+// === Constants ===
+var CONTENT_CACHE_KEY = 'driveview_content_v1';
+var CONTENT_CACHE_FP_KEY = 'driveview_content_fp_v1';
 
 // === Init ===
 document.addEventListener('DOMContentLoaded', function () {
-  showSkeletonCards();
-  loadAllContent();
   bindEvents();
+
+  // Stale-While-Revalidate: 前回セッションのキャッシュがあれば即座に描画
+  var cached = readContentCache();
+  if (cached && cached.length) {
+    onContentLoaded(cached, /* fromCache */ true);
+  } else {
+    showSkeletonCards();
+  }
+
+  // 常にバックエンドから最新を取得し、差分があれば再描画
+  loadAllContent();
 });
+
+function readContentCache() {
+  try {
+    var raw = sessionStorage.getItem(CONTENT_CACHE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function writeContentCache(data, fingerprint) {
+  try {
+    sessionStorage.setItem(CONTENT_CACHE_KEY, JSON.stringify(data));
+    sessionStorage.setItem(CONTENT_CACHE_FP_KEY, String(fingerprint));
+  } catch (e) {
+    // QuotaExceeded など: キャッシュは諦める
+  }
+}
+
+function computeFingerprint(items) {
+  // 高速チェックサム: 長さ + 各アイテムの (id + tags + thumbnail) を畳み込む
+  var fp = items.length;
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i];
+    var idLen = it.targetId ? it.targetId.length : 0;
+    var tagLen = it.tags ? it.tags.length : 0;
+    var thumbLen = it.thumbnailUrl ? it.thumbnailUrl.length : 0;
+    var titleLen = it.title ? it.title.length : 0;
+    fp = (Math.imul(fp, 31) + idLen + tagLen * 7 + thumbLen * 13 + titleLen * 17) | 0;
+  }
+  return fp;
+}
 
 function showSkeletonCards() {
   var grid = document.getElementById('gallery-grid');
@@ -62,18 +109,11 @@ function loadAllContent() {
     .getAllContent();
 }
 
-function loadMangaPages(folderId, callback) {
+function loadMangaReaderData(folderId, callback) {
   google.script.run
     .withSuccessHandler(callback)
     .withFailureHandler(onError)
-    .getMangaPages(folderId);
-}
-
-function loadChapters(targetId, callback) {
-  google.script.run
-    .withSuccessHandler(callback)
-    .withFailureHandler(onError)
-    .getChapters(targetId);
+    .getMangaReaderData(folderId);
 }
 
 function saveChapter(targetId, position, label, callback) {
@@ -113,36 +153,60 @@ function fetchAllTags(callback) {
 // Data Loading
 // ============================================================
 
-function onContentLoaded(data) {
-  appState.allContent = data || [];
+function onContentLoaded(data, fromCache) {
+  data = data || [];
+  var fp = computeFingerprint(data);
 
-  // #8: Parse tags once and cache for fast filtering
-  appState.allContent.forEach(function (item) {
+  // 楽観更新済み → サーバの古い状態で上書きしない（次回ロードで反映される）
+  if (!fromCache && appState.hasLocalMutations) {
+    hideLoading();
+    return;
+  }
+
+  // Stale-While-Revalidate: サーバ応答とキャッシュが同一なら再描画しない
+  if (!fromCache) {
+    var prevFp = sessionStorage.getItem(CONTENT_CACHE_FP_KEY);
+    if (prevFp !== null && String(fp) === prevFp && appState.allContent.length === data.length) {
+      writeContentCache(data, fp);
+      hideLoading();
+      return;
+    }
+  }
+
+  appState.allContent = data;
+
+  // タグを一度だけパースしキャッシュ
+  for (var i = 0; i < data.length; i++) {
+    var item = data[i];
     item._parsedTags = item.tags
       ? item.tags.split(',').map(function (t) { return t.trim(); }).filter(Boolean)
       : [];
-  });
+  }
 
   extractTags();
   renderTagBar();
   applyFilters();
   hideLoading();
+
+  if (!fromCache) writeContentCache(data, fp);
 }
 
 function extractTags() {
-  var tagSet = {};
+  var tagCount = {};
   var type = appState.selectedType;
-  appState.allContent.forEach(function (item) {
-    if (item.type === type && item.tags) {
-      item.tags.split(',').forEach(function (t) {
-        var tag = t.trim();
-        if (tag) tagSet[tag] = (tagSet[tag] || 0) + 1;
-      });
+  var src = appState.allContent;
+  for (var i = 0; i < src.length; i++) {
+    var item = src[i];
+    if (item.type !== type) continue;
+    var parsed = item._parsedTags;
+    if (!parsed || !parsed.length) continue;
+    for (var j = 0; j < parsed.length; j++) {
+      var tag = parsed[j];
+      tagCount[tag] = (tagCount[tag] || 0) + 1;
     }
-  });
-  // Sort by frequency
-  appState.allTags = Object.keys(tagSet).sort(function (a, b) {
-    return tagSet[b] - tagSet[a];
+  }
+  appState.allTags = Object.keys(tagCount).sort(function (a, b) {
+    return tagCount[b] - tagCount[a];
   });
 }
 
@@ -153,25 +217,27 @@ function extractTags() {
 function applyFilters() {
   var query = appState.searchQuery.toLowerCase();
   var tags = appState.selectedTags;
+  var hasTagFilter = tags.length > 0;
   var type = appState.selectedType;
+  var typeAll = type === 'All';
 
-  appState.filteredContent = appState.allContent.filter(function (item) {
-    // Type filter
-    if (type !== 'All' && item.type !== type) return false;
-
-    // Search filter
-    if (query && item.title.toLowerCase().indexOf(query) === -1) return false;
-
-    // Tag filter (#8: use cached parsed tags)
-    if (tags.length > 0) {
+  var filtered = [];
+  var src = appState.allContent;
+  for (var i = 0; i < src.length; i++) {
+    var item = src[i];
+    if (!typeAll && item.type !== type) continue;
+    if (query && (!item.title || item.title.toLowerCase().indexOf(query) === -1)) continue;
+    if (hasTagFilter) {
       var itemTags = item._parsedTags || [];
-      var match = tags.every(function (t) { return itemTags.indexOf(t) !== -1; });
-      if (!match) return false;
+      var ok = true;
+      for (var j = 0; j < tags.length; j++) {
+        if (itemTags.indexOf(tags[j]) === -1) { ok = false; break; }
+      }
+      if (!ok) continue;
     }
-
-    return true;
-  });
-
+    filtered.push(item);
+  }
+  appState.filteredContent = filtered;
   renderGallery();
 }
 
@@ -180,13 +246,16 @@ function applyFilters() {
 // ============================================================
 
 function bindEvents() {
-  // #2: Debounce search input to avoid re-rendering on every keystroke
+  setupGalleryDelegation();
+  setupTagBarDelegation();
+
+  // Search input (短めの debounce で体感を維持)
   var searchInput = document.getElementById('search-input');
   var searchTimer = null;
   searchInput.addEventListener('input', function () {
     appState.searchQuery = this.value;
     clearTimeout(searchTimer);
-    searchTimer = setTimeout(function () { applyFilters(); }, 200);
+    searchTimer = setTimeout(function () { applyFilters(); }, 100);
   });
 
   // Type tabs
@@ -231,11 +300,14 @@ function bindEvents() {
   document.getElementById('tag-editor-save').addEventListener('click', saveTagEditor);
 
   var tagInput = document.getElementById('tag-input');
-  tagInput.addEventListener('input', onTagInput);
+  var tagInputTimer = null;
+  tagInput.addEventListener('input', function () {
+    clearTimeout(tagInputTimer);
+    tagInputTimer = setTimeout(onTagInput, 60);
+  });
   tagInput.addEventListener('keydown', onTagInputKeydown);
   tagInput.addEventListener('focus', function () { onTagInput(); });
   tagInput.addEventListener('blur', function () {
-    // Delay to allow suggestion click
     setTimeout(function () { hideSuggestions(); }, 200);
   });
 
@@ -262,13 +334,13 @@ function bindEvents() {
 // Rendering - Gallery
 // ============================================================
 
+var TITLE_EXT_RE = /\.(mp4|mkv|avi|mov|webm|zip|rar|7z|pdf)$/i;
+
 function renderGallery() {
   var grid = document.getElementById('gallery-grid');
   var stats = document.getElementById('gallery-stats');
 
-  // Dynamic grid setup for layout optimization
   grid.dataset.viewType = appState.selectedType;
-
   stats.textContent = appState.filteredContent.length + ' 件のコンテンツ';
 
   if (appState.filteredContent.length === 0) {
@@ -280,82 +352,99 @@ function renderGallery() {
     return;
   }
 
-  var html = '';
-  appState.filteredContent.forEach(function (item, idx) {
+  // 文字列連結のみで一括 innerHTML。リスナーは委譲で一括処理。
+  var parts = [];
+  var items = appState.filteredContent;
+  for (var idx = 0; idx < items.length; idx++) {
+    var item = items[idx];
     var tagHtml = '';
-    if (item.tags) {
-      var parsedTags = item.tags.split(',').map(function(t){return t.trim();}).filter(Boolean);
-      parsedTags.sort(function(a, b){ return a.localeCompare(b, 'ja'); });
-      parsedTags.forEach(function (tag) {
-        tagHtml += '<span class="card-tag">' + escapeHtml(tag) + '</span>';
-      });
+    var parsed = item._parsedTags;
+    if (parsed && parsed.length) {
+      var sorted = parsed.slice().sort(function (a, b) { return a.localeCompare(b, 'ja'); });
+      for (var t = 0; t < sorted.length; t++) {
+        tagHtml += '<span class="card-tag">' + escapeHtml(sorted[t]) + '</span>';
+      }
     }
 
-    var displayTitle = item.title.replace(/\.(mp4|mkv|avi|mov|webm|zip|rar|7z|pdf)$/i, '');
+    var displayTitle = item.title ? item.title.replace(TITLE_EXT_RE, '') : '';
+    var delay = idx < 10 ? (idx * 0.03).toFixed(2) : '0.30';
+    var targetEsc = escapeHtml(item.targetId);
 
-    html +=
-      '<div class="card" data-index="' + idx + '" data-type="' + item.type + '" style="animation-delay:' + Math.min(idx * 0.03, 0.3) + 's">' +
-        '<div class="card-thumb" style="cursor:pointer;">' +
-          '<img src="' + escapeHtml(item.thumbnailUrl || '') + '" alt="" loading="lazy" onerror="this.style.display=\'none\'">' +
+    parts.push(
+      '<div class="card" data-index="' + idx + '" data-target="' + targetEsc + '" data-type="' + item.type + '" style="animation-delay:' + delay + 's">' +
+        '<div class="card-thumb">' +
+          '<img src="' + escapeHtml(item.thumbnailUrl || '') + '" alt="" loading="lazy" decoding="async" onerror="this.style.display=\'none\'">' +
         '</div>' +
         '<div class="card-body">' +
-          '<div class="card-title" style="cursor:pointer;">' + escapeHtml(displayTitle) + '</div>' +
+          '<div class="card-title">' + escapeHtml(displayTitle) + '</div>' +
           '<div class="card-tags">' + tagHtml + '</div>' +
           '<div class="card-actions">' +
-            '<span class="card-action-btn tag-edit-btn" data-target="' + escapeHtml(item.targetId) + '">✏️ タグ</span>' +
-            '<span class="card-action-btn thumb-edit-btn" data-target="' + escapeHtml(item.targetId) + '">🖼️ サムネ</span>' +
+            '<span class="card-action-btn tag-edit-btn">✏️ タグ</span>' +
+            '<span class="card-action-btn thumb-edit-btn">🖼️ サムネ</span>' +
           '</div>' +
         '</div>' +
-      '</div>';
-  });
-  grid.innerHTML = html;
+      '</div>'
+    );
+  }
+  grid.innerHTML = parts.join('');
+}
 
-  // Card click events (thumb and title navigate)
-  grid.querySelectorAll('.card-thumb, .card-title').forEach(function (el) {
-    el.addEventListener('click', function (e) {
-      var card = this.closest('.card');
-      var idx = parseInt(card.dataset.index);
+// gallery-grid 用のイベント委譲（1度だけバインド）
+function setupGalleryDelegation() {
+  var grid = document.getElementById('gallery-grid');
+  grid.addEventListener('click', function (e) {
+    var target = e.target;
+
+    if (target.closest('.tag-edit-btn')) {
+      e.stopPropagation();
+      var card = target.closest('.card');
+      if (card) openTagEditor(card.dataset.target);
+      return;
+    }
+
+    if (target.closest('.thumb-edit-btn')) {
+      e.stopPropagation();
+      var card2 = target.closest('.card');
+      if (card2) openThumbEditor(card2.dataset.target);
+      return;
+    }
+
+    if (target.closest('.card-thumb') || target.closest('.card-title')) {
+      var card3 = target.closest('.card');
+      if (!card3) return;
+      var idx = parseInt(card3.dataset.index, 10);
       var item = appState.filteredContent[idx];
+      if (!item) return;
       if (item.type === 'Video') openVideoModal(item);
       else if (item.type === 'Manga') openMangaReader(item);
-    });
-  });
-
-  // Tag edit button
-  grid.querySelectorAll('.tag-edit-btn').forEach(function (btn) {
-    btn.addEventListener('click', function (e) {
-      e.stopPropagation();
-      openTagEditor(this.dataset.target);
-    });
-  });
-
-  // Thumb edit button
-  grid.querySelectorAll('.thumb-edit-btn').forEach(function (btn) {
-    btn.addEventListener('click', function (e) {
-      e.stopPropagation();
-      openThumbEditor(this.dataset.target);
-    });
+    }
   });
 }
 
 function renderTagBar() {
   var bar = document.getElementById('tag-bar');
-  var html = '';
-  appState.allTags.forEach(function (tag) {
-    var active = appState.selectedTags.indexOf(tag) !== -1 ? ' active' : '';
-    html += '<button class="tag-chip' + active + '" data-tag="' + escapeHtml(tag) + '">' + escapeHtml(tag) + '</button>';
-  });
-  bar.innerHTML = html;
+  var parts = [];
+  var selected = appState.selectedTags;
+  for (var i = 0; i < appState.allTags.length; i++) {
+    var tag = appState.allTags[i];
+    var active = selected.indexOf(tag) !== -1 ? ' active' : '';
+    var esc = escapeHtml(tag);
+    parts.push('<button class="tag-chip' + active + '" data-tag="' + esc + '">' + esc + '</button>');
+  }
+  bar.innerHTML = parts.join('');
+}
 
-  bar.querySelectorAll('.tag-chip').forEach(function (chip) {
-    chip.addEventListener('click', function () {
-      var tag = this.dataset.tag;
-      var idx = appState.selectedTags.indexOf(tag);
-      if (idx === -1) appState.selectedTags.push(tag);
-      else appState.selectedTags.splice(idx, 1);
-      this.classList.toggle('active');
-      applyFilters();
-    });
+function setupTagBarDelegation() {
+  var bar = document.getElementById('tag-bar');
+  bar.addEventListener('click', function (e) {
+    var chip = e.target.closest('.tag-chip');
+    if (!chip) return;
+    var tag = chip.dataset.tag;
+    var idx = appState.selectedTags.indexOf(tag);
+    if (idx === -1) appState.selectedTags.push(tag);
+    else appState.selectedTags.splice(idx, 1);
+    chip.classList.toggle('active');
+    applyFilters();
   });
 }
 
@@ -403,14 +492,12 @@ function openMangaReader(item) {
 
   document.getElementById('manga-reader').classList.add('active');
 
-  loadMangaPages(item.targetId, function (pages) {
-    appState.mangaPages = pages || [];
+  loadMangaReaderData(item.targetId, function (data) {
+    data = data || {};
+    appState.mangaPages = data.pages || [];
+    appState.mangaChapters = data.chapters || [];
     renderCurrentPage();
     setupMangaNavigation();
-  });
-
-  loadChapters(item.targetId, function (chapters) {
-    appState.mangaChapters = chapters || [];
     renderChapterList();
   });
 }
@@ -543,14 +630,22 @@ function addCurrentChapter() {
 
   var targetId = appState.currentItem.targetId;
   var position = appState.currentPageIndex;
+  var trimmed = label.trim();
 
-  saveChapter(targetId, position, label.trim(), function (chapter) {
-    appState.mangaChapters.push(chapter);
-    appState.mangaChapters.sort(function (a, b) { return a.position - b.position; });
-    renderChapterList();
+  // Optimistic UI: 仮IDで先に描画し、サーバ確定で差し替える
+  var tempId = 'temp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
+  var optimistic = { chapterId: tempId, targetId: targetId, position: position, label: trimmed };
+  appState.mangaChapters.push(optimistic);
+  appState.mangaChapters.sort(function (a, b) { return a.position - b.position; });
+  renderChapterList();
+  if (!appState.chapterSidebarOpen) toggleChapterSidebar();
 
-    // サイドバーを自動で開く
-    if (!appState.chapterSidebarOpen) toggleChapterSidebar();
+  saveChapter(targetId, position, trimmed, function (chapter) {
+    var idx = appState.mangaChapters.findIndex(function (c) { return c.chapterId === tempId; });
+    if (idx !== -1) {
+      appState.mangaChapters[idx] = chapter;
+      renderChapterList();
+    }
   });
 }
 
@@ -562,45 +657,49 @@ function renderChapterList() {
     return;
   }
 
-  var html = '';
-  appState.mangaChapters.forEach(function (ch) {
-    html +=
+  var parts = [];
+  for (var i = 0; i < appState.mangaChapters.length; i++) {
+    var ch = appState.mangaChapters[i];
+    parts.push(
       '<div class="chapter-item" data-position="' + ch.position + '" data-id="' + escapeHtml(ch.chapterId) + '">' +
         '<div class="chapter-item-info">' +
           '<div class="chapter-item-label">' + escapeHtml(ch.label) + '</div>' +
           '<div class="chapter-item-page">' + (ch.position + 1) + ' ページ</div>' +
         '</div>' +
         '<button class="chapter-delete-btn" title="削除">✕</button>' +
-      '</div>';
-  });
-  list.innerHTML = html;
+      '</div>'
+    );
+  }
+  list.innerHTML = parts.join('');
 
-  // Click to jump
-  list.querySelectorAll('.chapter-item').forEach(function (item) {
-    item.addEventListener('click', function (e) {
-      if (e.target.closest('.chapter-delete-btn')) return;
-      var pos = parseInt(this.dataset.position);
-      jumpToPage(pos);
-    });
-  });
+  // 委譲リスナーは初回のみセットアップ
+  if (!list._delegated) {
+    list._delegated = true;
+    list.addEventListener('click', function (e) {
+      var delBtn = e.target.closest('.chapter-delete-btn');
+      if (delBtn) {
+        e.stopPropagation();
+        var item = delBtn.closest('.chapter-item');
+        var chapterId = item.dataset.id;
+        if (!confirm('このチャプターを削除しますか？')) return;
 
-  // Delete
-  list.querySelectorAll('.chapter-delete-btn').forEach(function (btn) {
-    btn.addEventListener('click', function (e) {
-      e.stopPropagation();
-      var item = this.closest('.chapter-item');
-      var chapterId = item.dataset.id;
-
-      if (!confirm('このチャプターを削除しますか？')) return;
-
-      removeChapter(chapterId, function () {
+        // Optimistic UI: 即座にUIから削除
         appState.mangaChapters = appState.mangaChapters.filter(function (c) {
           return c.chapterId !== chapterId;
         });
         renderChapterList();
-      });
+
+        removeChapter(chapterId, function () { /* background */ });
+        return;
+      }
+
+      var row = e.target.closest('.chapter-item');
+      if (row) {
+        var pos = parseInt(row.dataset.position, 10);
+        jumpToPage(pos);
+      }
     });
-  });
+  }
 }
 
 // ============================================================
@@ -637,39 +736,38 @@ function saveTagEditor() {
   if (!appState.tagEditorTarget) return;
 
   var targetId = appState.tagEditorTarget.targetId;
-  var sortedTags = appState.tagEditorTags.slice().sort(function(a,b){return a.localeCompare(b, 'ja');});
+  var sortedTags = appState.tagEditorTags.slice().sort(function (a, b) {
+    return a.localeCompare(b, 'ja');
+  });
   var tagsStr = sortedTags.join(', ');
 
-  // Optimistic Update (Immediate UI Reflection)
+  // Optimistic Update
   var item = appState.allContent.find(function (c) { return c.targetId === targetId; });
   if (item) {
     item.tags = tagsStr;
-    item._parsedTags = sortedTags; // Update cache
+    item._parsedTags = sortedTags.slice();
   }
 
   extractTags();
   renderTagBar();
-  
-  // Directly update only the affected card to avoid heavy full-grid re-render
-  var cardIdx = appState.filteredContent.findIndex(function (c) { return c.targetId === targetId; });
-  if (cardIdx !== -1) {
-    var cardEl = document.querySelector('.card[data-index="' + cardIdx + '"]');
-    if (cardEl) {
-      var tagsContainer = cardEl.querySelector('.card-tags');
-      if (tagsContainer) {
-        var html = '';
-        sortedTags.forEach(function(tag){
-          html += '<span class="card-tag">' + escapeHtml(tag) + '</span>';
-        });
-        tagsContainer.innerHTML = html;
+
+  // 該当カードのみ差分更新
+  var cardEl = document.querySelector('.card[data-target="' + cssEscape(targetId) + '"]');
+  if (cardEl) {
+    var tagsContainer = cardEl.querySelector('.card-tags');
+    if (tagsContainer) {
+      var html = '';
+      for (var i = 0; i < sortedTags.length; i++) {
+        html += '<span class="card-tag">' + escapeHtml(sortedTags[i]) + '</span>';
       }
+      tagsContainer.innerHTML = html;
     }
   }
 
   closeTagEditor();
+  invalidateContentCache();
 
-  // Save to backend quietly in background
-  saveTags(targetId, tagsStr, function () { /* Background save complete */ });
+  saveTags(targetId, tagsStr, function () { /* background */ });
 }
 
 function renderTagEditorChips() {
@@ -898,15 +996,14 @@ function fetchVideoAndCapture(info, fill, status) {
   })
   .then(function (response) {
     if (!response.ok) throw new Error('動画の取得に失敗 (' + response.status + ')');
-    
-    // Check if browser supports Streams API
+
     if (!response.body) {
       status.textContent = '動画をダウンロード中...';
       return response.blob();
     }
 
     var reader = response.body.getReader();
-    var total = info.fileSize || 0;
+    var total = parseInt(response.headers.get('Content-Length') || '0', 10);
     var loaded = 0;
     var chunks = [];
 
@@ -1075,31 +1172,23 @@ function saveThumbEditor() {
   var targetId = appState.thumbEditorTarget.targetId;
   var url = appState.thumbEditorSelected;
 
-  // Optimistic Update (Immediate UI Reflection using Base64 dataURL)
+  // Optimistic Update
   var item = appState.allContent.find(function (c) { return c.targetId === targetId; });
   if (item) item.thumbnailUrl = url;
 
-  // Directly update only the affected card to avoid heavy full-grid re-render
-  var cardIdx = appState.filteredContent.findIndex(function (c) { return c.targetId === targetId; });
-  if (cardIdx !== -1) {
-    var cardEl = document.querySelector('.card[data-index="' + cardIdx + '"]');
-    if (cardEl) {
-      var imgEl = cardEl.querySelector('.card-thumb img');
-      if (imgEl) {
-        imgEl.src = escapeHtml(url);
-        imgEl.style.display = ''; // Reset display in case it was hidden by onerror
-      }
+  var cardEl = document.querySelector('.card[data-target="' + cssEscape(targetId) + '"]');
+  if (cardEl) {
+    var imgEl = cardEl.querySelector('.card-thumb img');
+    if (imgEl) {
+      imgEl.src = url;
+      imgEl.style.display = '';
     }
   }
 
   closeThumbEditor();
+  invalidateContentCache();
 
-  // Save to backend
-  // Save to backend directly to spreadsheet (both Base64 data and normal URLs)
   google.script.run
-    .withSuccessHandler(function () {
-      console.log('Thumbnail successfully saved: ' + targetId);
-    })
     .withFailureHandler(onError)
     .updateThumbnail(targetId, url);
 }
@@ -1108,7 +1197,7 @@ function saveThumbEditor() {
 // Utilities
 // ============================================================
 
-// #7: Pure string replacement instead of DOM-based escaping
+// Pure string replacement HTML escape
 function escapeHtml(str) {
   if (!str) return '';
   return String(str)
@@ -1117,6 +1206,21 @@ function escapeHtml(str) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+// CSS セレクター用に属性値をエスケープ（querySelector に data-target を埋め込むため）
+function cssEscape(str) {
+  if (window.CSS && CSS.escape) return CSS.escape(str);
+  return String(str).replace(/(["\\\]])/g, '\\$1');
+}
+
+// SWR キャッシュを破棄し、本セッション内の以後のサーバ応答による上書きを抑止する
+function invalidateContentCache() {
+  try {
+    sessionStorage.removeItem(CONTENT_CACHE_KEY);
+    sessionStorage.removeItem(CONTENT_CACHE_FP_KEY);
+  } catch (e) { /* ignore */ }
+  appState.hasLocalMutations = true;
 }
 
 function hideLoading() {
