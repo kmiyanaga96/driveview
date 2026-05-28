@@ -58,14 +58,7 @@ function updateTags(targetId, tags) {
   return dbUpdateTags(targetId, tags);
 }
 
-/**
- * 全ユニークタグを取得する（サジェスト用）。
- * @returns {Array<string>}
- */
-function getAllTags() {
-  return dbGetAllTags();
-}
-
+// getAllTags は廃止 — フロントエンドの appState から直接抽出
 // getSuggestedThumbnails は廃止 — フロントエンドの appState から直接取得
 
 /**
@@ -80,28 +73,28 @@ function updateThumbnail(targetId, thumbnailUrl) {
 
 /**
  * 動画のアクセス情報を取得する（フレームキャプチャ用）。
- * フロントエンドが直接 Drive API から動画を取得するためのトークンを返す。
+ * fileSize はクライアント側で Content-Length ヘッダから取得するため
+ * Drive API 呼び出しは省略する。
  * @param {string} fileId 動画ファイルID
- * @returns {Object} { token, fileId, fileSize }
+ * @returns {Object} { token, fileId }
  */
 function getVideoAccessInfo(fileId) {
-  var token = ScriptApp.getOAuthToken();
-  var fileSize = 0;
-
-  try {
-    var file = Drive.Files.get(fileId, {
-      fields: 'size',
-      supportsAllDrives: true
-    });
-    fileSize = parseInt(file.size || '0');
-  } catch (e) {
-    Logger.log('getVideoAccessInfo error: ' + e.message);
-  }
-
   return {
-    token: token,
-    fileId: fileId,
-    fileSize: fileSize
+    token: ScriptApp.getOAuthToken(),
+    fileId: fileId
+  };
+}
+
+/**
+ * 漫画リーダー起動時に必要なデータを一括取得する。
+ * pages と chapters の取得を1往復にまとめる。
+ * @param {string} folderId
+ * @returns {Object} { pages, chapters }
+ */
+function getMangaReaderData(folderId) {
+  return {
+    pages: getMangaPages(folderId),
+    chapters: getChapters(folderId)
   };
 }
 

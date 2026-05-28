@@ -56,27 +56,19 @@ function getMangaPages(folderId) {
   return pages;
 }
 
+var _naturalCollator = null;
+
 /**
  * 自然順ソート（数値を考慮したファイル名ソート）。
  * 例: page_2.jpg < page_10.jpg
+ * Intl.Collator の numeric オプションで言語側に処理させる。
  * @param {string} a
  * @param {string} b
  * @returns {number}
  */
 function naturalSort_(a, b) {
-  var ax = [], bx = [];
-  a.replace(/(\d+)|(\D+)/g, function (_, $1, $2) {
-    ax.push([$1 || Infinity, $2 || '']);
-  });
-  b.replace(/(\d+)|(\D+)/g, function (_, $1, $2) {
-    bx.push([$1 || Infinity, $2 || '']);
-  });
-
-  while (ax.length && bx.length) {
-    var an = ax.shift();
-    var bn = bx.shift();
-    var nn = (an[0] - bn[0]) || an[1].localeCompare(bn[1]);
-    if (nn) return nn;
+  if (!_naturalCollator) {
+    _naturalCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
   }
-  return ax.length - bx.length;
+  return _naturalCollator.compare(a, b);
 }
