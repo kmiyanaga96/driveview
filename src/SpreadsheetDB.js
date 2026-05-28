@@ -224,31 +224,3 @@ function findRowByTargetId_(sheet, targetId) {
   return match ? match.getRow() : null;
 }
 
-/**
- * 全コンテンツから一意なタグ一覧を取得する（サジェスト用）。
- * 現在フロントエンドは appState から算出するためほぼ未使用だが、
- * 互換のため残す。
- * @returns {Array<string>} ユニークなタグの配列（出現回数降順）
- */
-function dbGetAllTags() {
-  var sheet = getMainSheet_();
-  var lastRow = sheet.getLastRow();
-  if (lastRow < 2) return [];
-
-  var tagsCol = sheet.getRange(2, 4, lastRow - 1, 1).getValues();
-  var tagCount = {};
-
-  for (var i = 0; i < tagsCol.length; i++) {
-    var tagsStr = tagsCol[i][0] ? String(tagsCol[i][0]) : '';
-    if (!tagsStr) continue;
-    var parts = tagsStr.split(',');
-    for (var j = 0; j < parts.length; j++) {
-      var tag = parts[j].trim();
-      if (tag) tagCount[tag] = (tagCount[tag] || 0) + 1;
-    }
-  }
-
-  return Object.keys(tagCount).sort(function (a, b) {
-    return tagCount[b] - tagCount[a];
-  });
-}

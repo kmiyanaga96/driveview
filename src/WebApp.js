@@ -58,14 +58,7 @@ function updateTags(targetId, tags) {
   return dbUpdateTags(targetId, tags);
 }
 
-/**
- * 全ユニークタグを取得する（サジェスト用）。
- * @returns {Array<string>}
- */
-function getAllTags() {
-  return dbGetAllTags();
-}
-
+// getAllTags は廃止 — フロントエンドの appState から直接抽出
 // getSuggestedThumbnails は廃止 — フロントエンドの appState から直接取得
 
 /**
