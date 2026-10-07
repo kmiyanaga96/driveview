@@ -5,15 +5,20 @@
  * ユーザー操作時にフォルダIDから動的取得する。
  */
 
-var MANGA_PAGES_CACHE_PREFIX = 'manga_pages:';
-var MANGA_PAGES_CACHE_TTL_SEC = 60 * 60; // 1時間 (ページ追加の反映遅延の上限)
+var MANGA_PAGES_CACHE_PREFIX = 'manga_pages2:';
+// thumbnailLink (数時間で失効) を含むため短めに保持する。失効時はクライアントが安定URLへフォールバックする
+var MANGA_PAGES_CACHE_TTL_SEC = 30 * 60;
 
 /**
  * 漫画フォルダ内の全画像ページを名前順で取得する。
- * ページ一覧 (ID と名前) は CacheService に保持し、再オープン時の Drive 走査を省く。
- * URL は失効しない drive.google.com/thumbnail 形式なのでキャッシュしても切れない。
+ * ページ一覧は CacheService に保持し、再オープン時の Drive 走査を省く。
+ *
+ * 画像の取得経路:
+ *   thumb: Drive の thumbnailLink からサイズ指定を除いたもの (lh3.googleusercontent.com)。
+ *          クライアントが "=s<px>-rw" を付けて CDN から直接取得する（リダイレクト無しで最速）。
+ *   url:   失効しない drive.google.com/thumbnail 形式。thumb が無い/失効した場合のフォールバック。
  * @param {string} folderId 漫画フォルダのID (= Target_ID)
- * @returns {Array<Object>} ページ情報の配列 {id, name, url}
+ * @returns {Array<Object>} ページ情報の配列 {id, name, thumb, url}
  */
 function getMangaPages(folderId) {
   var config = getConfig();
@@ -41,6 +46,7 @@ function getMangaPages(folderId) {
     pages.push({
       id: entries[i][0],
       name: entries[i][1],
+      thumb: entries[i][2] || '',
       url: driveThumbnailUrl_(entries[i][0], config.THUMB_WIDTH_READER)
     });
   }
@@ -56,7 +62,7 @@ function invalidateMangaPagesCache_(folderId) {
 }
 
 /**
- * Drive から漫画フォルダ内の画像を列挙し、自然順でソートした [id, name] を返す。
+ * Drive から漫画フォルダ内の画像を列挙し、自然順でソートした [id, name, thumbBase] を返す。
  * @param {string} folderId
  * @param {Object} config
  * @returns {Array<Array<string>>}
@@ -73,7 +79,7 @@ function listMangaPageEntries_(folderId, config) {
   do {
     var response = Drive.Files.list({
       q: query,
-      fields: 'nextPageToken,files(id,name)',
+      fields: 'nextPageToken,files(id,name,thumbnailLink)',
       pageSize: 1000,
       pageToken: pageToken,
       supportsAllDrives: true,
@@ -82,7 +88,9 @@ function listMangaPageEntries_(folderId, config) {
 
     var files = response.files || [];
     for (var i = 0; i < files.length; i++) {
-      entries.push([files[i].id, files[i].name]);
+      // 末尾のサイズ指定 (=s220 等) を除き、クライアント側で表示サイズを付ける
+      var thumb = files[i].thumbnailLink ? files[i].thumbnailLink.replace(/=s\d+$/, '') : '';
+      entries.push([files[i].id, files[i].name, thumb]);
     }
 
     pageToken = response.nextPageToken;

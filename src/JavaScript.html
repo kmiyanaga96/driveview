@@ -210,11 +210,43 @@ function loadAllContent(cachedVersion) {
     .getAllContent(cachedVersion);
 }
 
+// 漫画リーダーのデータ (pages + chapters) 取得。カードへのホバー/タッチで先読みし、
+// 開いた時点で応答済み or 取得中なら待ち時間を短縮する
+var readerDataCache = {}; // folderId -> { data, time, waiters }
+var READER_DATA_TTL_MS = 5 * 60 * 1000;
+
 function loadMangaReaderData(folderId, callback) {
+  var entry = readerDataCache[folderId];
+  if (entry && entry.data && Date.now() - entry.time < READER_DATA_TTL_MS) {
+    callback(entry.data);
+    return;
+  }
+  if (entry && entry.waiters) {
+    entry.waiters.push(callback);
+    return;
+  }
+  entry = readerDataCache[folderId] = { data: null, time: 0, waiters: [callback] };
   google.script.run
-    .withSuccessHandler(callback)
-    .withFailureHandler(onError)
+    .withSuccessHandler(function (data) {
+      var waiters = entry.waiters;
+      entry.data = data || {};
+      entry.time = Date.now();
+      entry.waiters = null;
+      for (var i = 0; i < waiters.length; i++) waiters[i](entry.data);
+    })
+    .withFailureHandler(function (err) {
+      delete readerDataCache[folderId];
+      onError(err);
+    })
     .getMangaReaderData(folderId);
+}
+
+function prefetchMangaReaderData(folderId) {
+  loadMangaReaderData(folderId, function (data) {
+    // 1ページ目だけ温めておく
+    var first = data && data.pages && data.pages[0];
+    if (first) new Image().src = MangaLoader.urlFor(first, MangaLoader.hiSize(), false);
+  });
 }
 
 function saveChapter(targetId, position, label, callback) {
@@ -443,12 +475,21 @@ function bindEvents() {
 
 var TITLE_EXT_RE = /\.(mp4|mkv|avi|mov|webm|zip|rar|7z|pdf)$/i;
 
+// 一覧は先頭から GALLERY_CHUNK 件ずつ描画し、末尾が近づいたら続きを追加する
+// （件数が多くても初期描画と Base64 サムネイルのデコードを最小限にする）
+var GALLERY_CHUNK = 40;
+var galleryObserver = null;
+var galleryRendered = 0;
+
 function renderGallery() {
   var grid = document.getElementById('gallery-grid');
   var stats = document.getElementById('gallery-stats');
 
   grid.dataset.viewType = appState.selectedType;
   stats.textContent = appState.filteredContent.length + ' 件のコンテンツ';
+
+  if (galleryObserver) { galleryObserver.disconnect(); galleryObserver = null; }
+  galleryRendered = 0;
 
   if (appState.filteredContent.length === 0) {
     grid.innerHTML =
@@ -459,39 +500,75 @@ function renderGallery() {
     return;
   }
 
-  // 文字列連結のみで一括 innerHTML。リスナーは委譲で一括処理。
-  var parts = [];
+  grid.innerHTML = '';
+  appendGalleryChunk_();
+}
+
+function appendGalleryChunk_() {
+  var grid = document.getElementById('gallery-grid');
   var items = appState.filteredContent;
-  for (var idx = 0; idx < items.length; idx++) {
-    var item = items[idx];
-    var tagHtml = renderCardTags(item);
+  var end = Math.min(items.length, galleryRendered + GALLERY_CHUNK);
 
-    var displayTitle = item.title ? item.title.replace(TITLE_EXT_RE, '') : '';
-    var delay = idx < 10 ? (idx * 0.03).toFixed(2) : '0.30';
-    var targetEsc = escapeHtml(item.targetId);
-
-    parts.push(
-      '<div class="card" data-index="' + idx + '" data-target="' + targetEsc + '" data-type="' + item.type + '" style="animation-delay:' + delay + 's">' +
-        '<div class="card-thumb">' +
-          '<img src="' + escapeHtml(item.thumbnailUrl || '') + '" alt="" loading="lazy" decoding="async" onerror="this.style.display=\'none\'">' +
-        '</div>' +
-        '<div class="card-body">' +
-          '<div class="card-title">' + escapeHtml(displayTitle) + '</div>' +
-          '<div class="card-tags">' + tagHtml + '</div>' +
-          '<div class="card-actions">' +
-            '<span class="card-action-btn tag-edit-btn">✏️ タグ</span>' +
-            '<span class="card-action-btn thumb-edit-btn">🖼️ サムネ</span>' +
-          '</div>' +
-        '</div>' +
-      '</div>'
-    );
+  // 文字列連結のみで一括挿入。リスナーは委譲で一括処理。
+  var parts = [];
+  for (var idx = galleryRendered; idx < end; idx++) {
+    parts.push(renderCardHtml_(items[idx], idx));
   }
-  grid.innerHTML = parts.join('');
+  var sentinel = grid.querySelector('.gallery-sentinel');
+  if (sentinel) sentinel.remove();
+  grid.insertAdjacentHTML('beforeend', parts.join(''));
+  galleryRendered = end;
+
+  if (galleryRendered < items.length && window.IntersectionObserver) {
+    sentinel = document.createElement('div');
+    sentinel.className = 'gallery-sentinel';
+    grid.appendChild(sentinel);
+    if (!galleryObserver) {
+      galleryObserver = new IntersectionObserver(function (obs) {
+        if (obs[0].isIntersecting) appendGalleryChunk_();
+      }, { rootMargin: '1200px 0px' });
+    }
+    galleryObserver.observe(sentinel);
+  } else if (galleryRendered < items.length) {
+    appendGalleryChunk_(); // IntersectionObserver 非対応環境は全件描画
+  }
+}
+
+function renderCardHtml_(item, idx) {
+  var displayTitle = item.title ? item.title.replace(TITLE_EXT_RE, '') : '';
+  var delay = idx < 10 ? (idx * 0.03).toFixed(2) : '0';
+  var targetEsc = escapeHtml(item.targetId);
+
+  return '<div class="card" data-index="' + idx + '" data-target="' + targetEsc + '" data-type="' + item.type + '" style="animation-delay:' + delay + 's">' +
+      '<div class="card-thumb">' +
+        '<img src="' + escapeHtml(item.thumbnailUrl || '') + '" alt="" loading="lazy" decoding="async" onerror="this.style.display=\'none\'">' +
+      '</div>' +
+      '<div class="card-body">' +
+        '<div class="card-title">' + escapeHtml(displayTitle) + '</div>' +
+        '<div class="card-tags">' + renderCardTags(item) + '</div>' +
+        '<div class="card-actions">' +
+          '<span class="card-action-btn tag-edit-btn">✏️ タグ</span>' +
+          '<span class="card-action-btn thumb-edit-btn">🖼️ サムネ</span>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
 }
 
 // gallery-grid 用のイベント委譲（1度だけバインド）
 function setupGalleryDelegation() {
   var grid = document.getElementById('gallery-grid');
+
+  // 漫画カードにカーソルを乗せた/触れた時点でリーダーのデータを先読みする
+  function prefetchFromEvent(e) {
+    var card = e.target.closest && e.target.closest('.card[data-type="Manga"]');
+    if (card && !card._prefetched) {
+      card._prefetched = true;
+      prefetchMangaReaderData(card.dataset.target);
+    }
+  }
+  grid.addEventListener('pointerover', prefetchFromEvent);
+  grid.addEventListener('touchstart', prefetchFromEvent, { passive: true });
+
   grid.addEventListener('click', function (e) {
     var target = e.target;
 
@@ -606,19 +683,30 @@ function openMangaReader(item) {
   document.getElementById('manga-reader-title').textContent = displayTitle;
   document.getElementById('manga-page-indicator').textContent = '読み込み中...';
   // リーダーの DOM は永続化（再ビルドや多重リスナーを避ける）。
-  // ロード中はページ番号インジケーターのみで表現する。
   ensureMangaReaderDom_();
-  var img = document.getElementById('manga-pages').querySelector('.manga-page-img');
-  if (img) img.removeAttribute('src');
+  MangaLoader.reset();
+  var pagesEl = document.getElementById('manga-pages');
+  var img = pagesEl.querySelector('.manga-page-img');
+  // 一覧で表示済みの表紙 (= 先頭画像) をブラウザキャッシュから即表示しておく
+  var coverId = /[?&]id=([^&]+)/.exec(item.thumbnailUrl || '');
+  appState.mangaCoverId = coverId ? decodeURIComponent(coverId[1]) : null;
+  if (appState.mangaCoverId) {
+    img.src = item.thumbnailUrl;
+  } else {
+    img.removeAttribute('src');
+  }
+  pagesEl.classList.remove('page-loading');
   document.getElementById('chapter-list').innerHTML = '';
   document.getElementById('chapter-sidebar').classList.remove('open');
 
   document.getElementById('manga-reader').classList.add('active');
 
   loadMangaReaderData(item.targetId, function (data) {
-    data = data || {};
+    if (appState.currentItem !== item || appState.currentView !== 'manga') return;
     appState.mangaPages = data.pages || [];
-    appState.mangaChapters = data.chapters || [];
+    // チャプターは編集されるので共有キャッシュとは別の配列にする
+    appState.mangaChapters = (data.chapters || []).slice();
+    MangaLoader.setPages(appState.mangaPages, onMangaPageReady);
     renderCurrentPage();
     setupMangaNavigation();
     renderChapterList();
@@ -628,9 +716,198 @@ function openMangaReader(item) {
 function closeMangaReader() {
   appState.currentView = 'gallery';
   document.getElementById('manga-reader').classList.remove('active');
+  // チャプター編集を反映させるため、次回はサーバ (キャッシュ済み) から取り直す
+  if (appState.currentItem) delete readerDataCache[appState.currentItem.targetId];
   appState.mangaPages = [];
   appState.mangaChapters = [];
+  MangaLoader.reset();
   removeMangaNavigation();
+}
+
+// ============================================================
+// Manga Page Loader
+// 2段階の解像度で先読みする:
+//   - 現在ページ前後は高解像度 (表示サイズに合わせた =s<px>)
+//   - その先は低解像度 (=s480) を広めに先読みし、高解像度が間に合わない時の代替にする
+// 進行方向を優先し、同時接続数を絞って近いページから順に取得する。
+// 画像は CDN (lh3) から直接取得し、失効時は drive.google.com/thumbnail にフォールバックする。
+// ============================================================
+
+var MangaLoader = (function () {
+  var HI_AHEAD = 3;      // 高解像度で先読みする先のページ数
+  var LO_AHEAD = 10;     // 低解像度で先読みする先のページ数
+  var BEHIND = 2;        // 戻る方向に保持するページ数
+  var KEEP_RANGE = 20;   // これより離れた読み込み済み画像は破棄する
+  var MAX_PARALLEL = 3;  // 少なめにして、ページ送りのたびに優先度を入れ替えやすくする
+  var LO_SIZE = 480;
+
+  var pages = [];
+  var entries = {};      // "idx:tier" -> { idx, tier, state, img, url, fallback }
+  var queue = [];
+  var active = 0;
+  var current = 0;
+  var dir = 1;
+  var onReady = null;
+  var generation = 0;    // reset 後に古い読み込み完了を無視するため
+
+  function hiSize() {
+    var px = Math.max(window.innerWidth, window.innerHeight) * (window.devicePixelRatio || 1);
+    return Math.min(1600, Math.max(800, Math.ceil(px / 200) * 200));
+  }
+
+  function urlFor(page, size, fallback) {
+    if (page.thumb && !fallback) return page.thumb + '=s' + size + '-rw';
+    return 'https://drive.google.com/thumbnail?id=' + encodeURIComponent(page.id) + '&sz=w' + size;
+  }
+
+  function want(idx, tier) {
+    if (idx < 0 || idx >= pages.length) return;
+    var key = idx + ':' + tier;
+    if (entries[key]) return;
+    entries[key] = { idx: idx, tier: tier, state: 'queued' };
+    queue.push(key);
+  }
+
+  // 小さいほど先に取得する。
+  // 低解像度は軽いので先の LO_AHEAD ページ分を優先し、連続でめくっても何かしら表示できるようにする。
+  // 高解像度は現在ページ → 次のページ… の順。読み進めて止まった時に追いつく。
+  function priority(e) {
+    var d = (e.idx - current) * dir;
+    if (d < 0) return 100 - d;                    // 戻る方向は最後
+    if (e.tier === 'lo') return d === 0 ? 0 : 2 + d;  // 0, 3..12
+    return d === 0 ? 1 : 20 + d;                  // 1, 21..23
+  }
+
+  // めくり過ぎたページの高解像度読み込みを中断して帯域を空ける
+  function abortPassed() {
+    for (var key in entries) {
+      var e = entries[key];
+      if (e.state === 'loading' && e.tier === 'hi' && (e.idx - current) * dir < 0) {
+        e.img.onload = e.img.onerror = null;
+        e.img.src = '';
+        active--;
+        delete entries[key];
+      }
+    }
+  }
+
+  function pump() {
+    queue.sort(function (a, b) { return priority(entries[a]) - priority(entries[b]); });
+    while (active < MAX_PARALLEL && queue.length) {
+      start(entries[queue.shift()]);
+    }
+  }
+
+  function start(e) {
+    var gen = generation;
+    var page = pages[e.idx];
+    var size = e.tier === 'hi' ? hiSize() : LO_SIZE;
+    var img = new Image();
+    img.decoding = 'async';
+    e.img = img;
+    e.state = 'loading';
+    active++;
+
+    function finish(ok) {
+      if (gen !== generation) return;
+      active--;
+      e.state = ok ? 'done' : 'error';
+      e.url = img.src;
+      if (ok && onReady) onReady(e.idx, e.tier);
+      pump();
+    }
+    img.onload = function () {
+      // デコードまで済ませてから差し替えるとページ送りでちらつかない
+      if (img.decode) img.decode().then(function () { finish(true); }, function () { finish(true); });
+      else finish(true);
+    };
+    img.onerror = function () {
+      if (gen !== generation) return;
+      if (!e.fallback) { // thumbnailLink の失効など → 安定URLで再試行
+        e.fallback = true;
+        img.src = urlFor(page, size, true);
+      } else {
+        finish(false);
+      }
+    };
+    if (e.idx === current) img.fetchPriority = 'high';
+    img.src = urlFor(page, size, false);
+  }
+
+  function schedule() {
+    // 遠くなった未着手・読み込み済みのエントリを捨てる
+    queue = queue.filter(function (key) {
+      var e = entries[key];
+      if (Math.abs(e.idx - current) > KEEP_RANGE) { delete entries[key]; return false; }
+      return true;
+    });
+    for (var key in entries) {
+      var e = entries[key];
+      if (e.state !== 'loading' && e.state !== 'queued' && Math.abs(e.idx - current) > KEEP_RANGE) {
+        delete entries[key];
+      }
+    }
+
+    abortPassed();
+    if (!best(current) || best(current).tier !== 'hi') want(current, 'lo');
+    want(current, 'hi');
+    for (var i = 1; i <= LO_AHEAD; i++) want(current + dir * i, 'lo');
+    for (var j = 1; j <= HI_AHEAD; j++) want(current + dir * j, 'hi');
+    for (var k = 1; k <= BEHIND; k++) want(current - dir * k, 'hi');
+    pump();
+  }
+
+  // 表示可能な最良の画像 (高解像度優先)
+  function best(idx) {
+    var hi = entries[idx + ':hi'];
+    if (hi && hi.state === 'done') return hi;
+    var lo = entries[idx + ':lo'];
+    if (lo && lo.state === 'done') return lo;
+    return null;
+  }
+
+  return {
+    hiSize: hiSize,
+    urlFor: urlFor,
+    best: best,
+    reset: function () {
+      generation++;
+      pages = []; entries = {}; queue = []; active = 0; current = 0; dir = 1; onReady = null;
+    },
+    setPages: function (list, callback) {
+      pages = list;
+      onReady = callback;
+    },
+    setCurrent: function (idx) {
+      if (idx !== current) dir = idx > current ? 1 : -1;
+      current = idx;
+      schedule();
+    }
+  };
+})();
+
+// 読み込み完了通知: 現在ページなら表示を更新する（低解像度 → 高解像度の差し替えを含む）
+function onMangaPageReady(idx) {
+  if (idx === appState.currentPageIndex) showMangaPageImage_();
+}
+
+function showMangaPageImage_() {
+  var container = document.getElementById('manga-pages');
+  var img = container.querySelector('.manga-page-img');
+  var e = MangaLoader.best(appState.currentPageIndex);
+  if (e) {
+    if (img.src !== e.url) img.src = e.url;
+    container.classList.remove('page-loading');
+  } else {
+    var page = appState.mangaPages[appState.currentPageIndex];
+    if (page && page.id === appState.mangaCoverId && img.getAttribute('src')) {
+      // 表紙と同じページ: 高解像度が届くまで一覧の表紙を表示しておく
+      return;
+    }
+    // 前のページを残さず、読み込み中であることを示す
+    img.removeAttribute('src');
+    container.classList.add('page-loading');
+  }
 }
 
 // 一度だけ生成し、ページ送りでは img.src と番号テキストのみ更新する
@@ -681,21 +958,12 @@ function renderCurrentPage() {
 
   var img = container.querySelector('.manga-page-img');
   var pageNum = container.querySelector('.manga-page-number');
-  var page = appState.mangaPages[idx];
 
-  img.src = page.url;
   img.alt = 'Page ' + (idx + 1);
   pageNum.textContent = (idx + 1) + ' / ' + total;
 
-  // 前後 2 ページを先読み（ブラウザのキャッシュに乗せておく）
-  for (var off = -2; off <= 2; off++) {
-    if (off === 0) continue;
-    var p = idx + off;
-    if (p >= 0 && p < total) {
-      var pre = new Image();
-      pre.src = appState.mangaPages[p].url;
-    }
-  }
+  MangaLoader.setCurrent(idx);
+  showMangaPageImage_();
 
   updatePageIndicator();
 }
