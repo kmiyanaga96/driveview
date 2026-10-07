@@ -972,6 +972,7 @@ function closeThumbEditor() {
   document.getElementById('thumb-editor').classList.remove('active');
   appState.thumbEditorTarget = null;
   appState.thumbEditorSelected = '';
+  appState.captureSource = null; // 取得済み動画データを解放
 }
 
 function renderThumbEditor(data) {
@@ -991,6 +992,7 @@ function renderThumbEditor(data) {
   if (item && item.type === 'Video') {
     html += '<div class="thumb-editor-section-label">動画からキャプチャ</div>';
     html += '<button id="frame-capture-btn" class="frame-capture-btn">🎬 動画から10フレームを自動生成</button>';
+    html += '<button id="frame-capture-full-btn" class="frame-capture-btn secondary" style="display:none">🎞 動画全体から選ぶ（全体をダウンロード）</button>';
     html += '<div id="frame-capture-progress" class="frame-capture-progress" style="display:none">';
     html += '<div class="frame-capture-progress-bar"><div id="frame-capture-fill" class="frame-capture-progress-fill" style="width:0%"></div></div>';
     html += '<div id="frame-capture-status" class="frame-capture-status">準備中...</div>';
@@ -1005,9 +1007,13 @@ function renderThumbEditor(data) {
   var captureBtn = document.getElementById('frame-capture-btn');
   if (captureBtn) {
     captureBtn.addEventListener('click', function () {
-      this.disabled = true;
-      this.textContent = '⏳ 動画を読み込み中...';
-      startFrameCapture(item.targetId);
+      startFrameCapture(item.targetId, false);
+    });
+  }
+  var captureFullBtn = document.getElementById('frame-capture-full-btn');
+  if (captureFullBtn) {
+    captureFullBtn.addEventListener('click', function () {
+      startFrameCapture(item.targetId, true);
     });
   }
 }
@@ -1026,40 +1032,105 @@ function bindThumbOptionClicks(container) {
 // Video Frame Capture
 // ============================================================
 
-function startFrameCapture(fileId) {
+// 先頭だけ取得して素早くフレームを出す。動画の長さに対して取得済みの割合の範囲から切り出す。
+var CAPTURE_HEAD_BYTES = 32 * 1024 * 1024;
+var CAPTURE_SEEK_TIMEOUT_MS = 4000;
+
+function setCaptureBusy_(busy) {
+  var btn = document.getElementById('frame-capture-btn');
+  var fullBtn = document.getElementById('frame-capture-full-btn');
+  if (btn) btn.disabled = busy;
+  if (fullBtn) fullBtn.disabled = busy;
+  if (busy && btn) btn.textContent = '⏳ 動画を読み込み中...';
+}
+
+function showCaptureError_(status, message) {
+  status.textContent = message;
+  setCaptureBusy_(false);
+  var btn = document.getElementById('frame-capture-btn');
+  if (btn) btn.textContent = '🎬 再試行';
+}
+
+/**
+ * @param {string} fileId
+ * @param {boolean} full true なら動画全体を取得する
+ */
+function startFrameCapture(fileId, full) {
   var progress = document.getElementById('frame-capture-progress');
   var fill = document.getElementById('frame-capture-fill');
   var status = document.getElementById('frame-capture-status');
   progress.style.display = 'block';
+  setCaptureBusy_(true);
+
+  // 取得済みのデータで足りるなら再ダウンロードしない（再キャプチャが即時になる）
+  var cached = appState.captureSource;
+  if (cached && cached.fileId === fileId && (cached.complete || !full)) {
+    captureFramesFromSource(cached, fill, status);
+    return;
+  }
+
   status.textContent = 'アクセス情報を取得中...';
   fill.style.width = '5%';
 
   google.script.run
     .withSuccessHandler(function (info) {
       status.textContent = 'ダウンロード準備中...';
-      fill.style.width = '5%';
-      fetchVideoAndCapture(info, fill, status);
+      fetchVideoSource(info, full, fill, status)
+        .then(function (source) {
+          appState.captureSource = source;
+          captureFramesFromSource(source, fill, status);
+        })
+        .catch(function (err) {
+          showCaptureError_(status, 'エラー: ' + err.message);
+        });
     })
     .withFailureHandler(function (err) {
-      status.textContent = 'エラー: ' + (err.message || err);
-      var btn = document.getElementById('frame-capture-btn');
-      if (btn) { btn.disabled = false; btn.textContent = '🎬 再試行'; }
+      showCaptureError_(status, 'エラー: ' + (err.message || err));
     })
     .getVideoAccessInfo(fileId);
 }
 
-function fetchVideoAndCapture(info, fill, status) {
-  var url = 'https://www.googleapis.com/drive/v3/files/' + info.fileId + '?alt=media';
+/**
+ * 動画データを取得する。full=false なら先頭 CAPTURE_HEAD_BYTES のみを Range で取得する。
+ * @returns {Promise<{fileId: string, blob: Blob, complete: boolean, fraction: number}>}
+ */
+function fetchVideoSource(info, full, fill, status) {
+  var base = 'https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(info.fileId);
+  var auth = { 'Authorization': 'Bearer ' + info.token };
 
-  fetch(url, {
-    headers: { 'Authorization': 'Bearer ' + info.token }
-  })
-  .then(function (response) {
+  if (full) {
+    return fetchWithProgress_(base + '?alt=media&supportsAllDrives=true', auth, fill, status)
+      .then(function (r) {
+        return { fileId: info.fileId, blob: r.blob, complete: true, fraction: 1 };
+      });
+  }
+
+  var sizeReq = fetch(base + '?fields=size&supportsAllDrives=true', { headers: auth })
+    .then(function (res) { return res.ok ? res.json() : {}; })
+    .then(function (meta) { return parseInt(meta.size || '0', 10); })
+    .catch(function () { return 0; });
+
+  var headers = { 'Authorization': auth.Authorization, 'Range': 'bytes=0-' + (CAPTURE_HEAD_BYTES - 1) };
+  var headReq = fetchWithProgress_(base + '?alt=media&supportsAllDrives=true', headers, fill, status);
+
+  return Promise.all([sizeReq, headReq]).then(function (results) {
+    var size = results[0];
+    var r = results[1];
+    // 200 = Range 非対応で全体が返った / サイズ以下 = 全体を取得済み
+    var complete = r.status !== 206 || (size > 0 && r.blob.size >= size);
+    var fraction = complete ? 1 : (size > 0 ? r.blob.size / size : 0);
+    return { fileId: info.fileId, blob: r.blob, complete: complete, fraction: fraction };
+  });
+}
+
+// ストリームで読みながら進捗バー (5%〜50%) を更新する
+function fetchWithProgress_(url, headers, fill, status) {
+  return fetch(url, { headers: headers }).then(function (response) {
     if (!response.ok) throw new Error('動画の取得に失敗 (' + response.status + ')');
 
     if (!response.body) {
       status.textContent = '動画をダウンロード中...';
-      return response.blob();
+      return response.blob().then(function (blob) { return { status: response.status, blob: blob }; });
     }
 
     var reader = response.body.getReader();
@@ -1067,25 +1138,23 @@ function fetchVideoAndCapture(info, fill, status) {
     var loaded = 0;
     var chunks = [];
 
-    return new Promise(function(resolve, reject) {
+    return new Promise(function (resolve, reject) {
       function read() {
-        reader.read().then(function(result) {
+        reader.read().then(function (result) {
           if (result.done) {
-            status.textContent = '動画データを結合中...';
-            resolve(new Blob(chunks));
+            resolve({ status: response.status, blob: new Blob(chunks) });
             return;
           }
           chunks.push(result.value);
           loaded += result.value.length;
-          
+
+          var mbLoaded = (loaded / (1024 * 1024)).toFixed(1);
           if (total > 0) {
             var percent = Math.round((loaded / total) * 100);
-            var mbLoaded = (loaded / (1024 * 1024)).toFixed(1);
             var mbTotal = (total / (1024 * 1024)).toFixed(1);
             status.textContent = 'ダウンロード中: ' + mbLoaded + 'MB / ' + mbTotal + 'MB (' + percent + '%)';
-            fill.style.width = (5 + (percent * 0.45)) + '%'; // Progress from 5% to 50%
+            fill.style.width = (5 + (percent * 0.45)) + '%';
           } else {
-            var mbLoaded = (loaded / (1024 * 1024)).toFixed(1);
             status.textContent = 'ダウンロード中: ' + mbLoaded + 'MB';
           }
           read();
@@ -1093,64 +1162,78 @@ function fetchVideoAndCapture(info, fill, status) {
       }
       read();
     });
-  })
-  .then(function (blob) {
-    status.textContent = 'フレームを抽出準備中...';
-    var blobUrl = URL.createObjectURL(blob);
-    captureFramesFromBlob(blobUrl, fill, status);
-  })
-  .catch(function (err) {
-    status.textContent = 'エラー: ' + err.message;
-    var btn = document.getElementById('frame-capture-btn');
-    if (btn) { btn.disabled = false; btn.textContent = '🎬 再試行'; }
   });
 }
 
-function captureFramesFromBlob(blobUrl, fill, status) {
+// 先頭だけでは再生できない動画 (moov が末尾の MP4 など) は全体取得にフォールバックする
+function fallbackToFullCapture_(source, status) {
+  appState.captureSource = null;
+  status.textContent = 'この動画は先頭だけでは読めないため、全体をダウンロードします...';
+  startFrameCapture(source.fileId, true);
+}
+
+function captureFramesFromSource(source, fill, status) {
+  var blobUrl = URL.createObjectURL(source.blob);
   var video = document.createElement('video');
   video.muted = true;
   video.preload = 'auto';
+  var started = false;
 
   video.addEventListener('error', function () {
+    if (started) return; // シーク中のエラーはフレーム単位でスキップする
     URL.revokeObjectURL(blobUrl);
-    status.textContent = 'この動画形式はフレームキャプチャに対応していません';
-    var btn = document.getElementById('frame-capture-btn');
-    if (btn) { btn.disabled = false; btn.textContent = '🎬 再試行'; }
+    if (!source.complete) {
+      fallbackToFullCapture_(source, status);
+    } else {
+      showCaptureError_(status, 'この動画形式はフレームキャプチャに対応していません');
+    }
   });
 
   video.addEventListener('loadedmetadata', function () {
     var duration = video.duration;
     if (!duration || !isFinite(duration)) {
-      status.textContent = '動画の長さを取得できません';
       URL.revokeObjectURL(blobUrl);
+      if (!source.complete) {
+        fallbackToFullCapture_(source, status);
+      } else {
+        showCaptureError_(status, '動画の長さを取得できません');
+      }
       return;
     }
+    started = true;
 
     status.textContent = 'フレームを抽出中...';
     fill.style.width = '50%';
 
-    // Generate 10 random timestamps (5%~95% of duration)
+    // 取得済みの範囲 (ビットレート一定と仮定した概算) からランダムに10点選ぶ
+    var hi = source.complete ? 0.95 : Math.min(0.95, source.fraction * 0.85);
+    var lo = source.complete ? 0.05 : hi * 0.05;
     var timestamps = [];
     for (var i = 0; i < 10; i++) {
-      var t = duration * (0.05 + Math.random() * 0.9);
-      timestamps.push(t);
+      timestamps.push(duration * (lo + Math.random() * (hi - lo)));
     }
     timestamps.sort(function (a, b) { return a - b; });
 
-    captureFramesSequentially(video, timestamps, 0, [], fill, status, blobUrl);
+    captureFramesSequentially(video, timestamps, 0, [], fill, status, function (frames) {
+      URL.revokeObjectURL(blobUrl);
+      if (frames.length === 0 && !source.complete) {
+        fallbackToFullCapture_(source, status);
+        return;
+      }
+      fill.style.width = '100%';
+      status.textContent = '完了！ ' + frames.length + ' フレームを抽出しました' +
+        (source.complete ? '' : '（動画の冒頭から）');
+      displayCapturedFrames(frames, source);
+    });
   });
 
   video.src = blobUrl;
   video.load();
 }
 
-function captureFramesSequentially(video, timestamps, idx, frames, fill, status, blobUrl) {
+function captureFramesSequentially(video, timestamps, idx, frames, fill, status, done) {
   if (idx >= timestamps.length) {
-    // All frames captured
-    URL.revokeObjectURL(blobUrl); // Free memory
-    fill.style.width = '100%';
-    status.textContent = '完了！ ' + frames.length + ' フレームを抽出しました';
-    displayCapturedFrames(frames);
+    done(frames);
     return;
   }
 
@@ -1158,11 +1241,18 @@ function captureFramesSequentially(video, timestamps, idx, frames, fill, status,
   fill.style.width = progress + '%';
   status.textContent = 'フレーム ' + (idx + 1) + ' / ' + timestamps.length + ' を抽出中...';
 
-  video.currentTime = timestamps[idx];
-
-  video.addEventListener('seeked', function onSeeked() {
+  var finished = false;
+  function next() {
+    if (finished) return;
+    finished = true;
+    clearTimeout(timer);
     video.removeEventListener('seeked', onSeeked);
+    captureFramesSequentially(video, timestamps, idx + 1, frames, fill, status, done);
+  }
+  // 取得範囲外へのシークなどで seeked が来ない場合はそのフレームを諦める
+  var timer = setTimeout(next, CAPTURE_SEEK_TIMEOUT_MS);
 
+  function onSeeked() {
     try {
       var canvas = document.createElement('canvas');
       var targetWidth = Math.min(video.videoWidth, 320); // Resize to 320px width for 10KB size limit
@@ -1189,16 +1279,14 @@ function captureFramesSequentially(video, timestamps, idx, frames, fill, status,
         dataUrl = canvas.toDataURL('image/jpeg', 0.4);
       }
 
-      var timeLabel = formatTime(timestamps[idx]);
-
-      frames.push({ url: dataUrl, time: timeLabel });
+      frames.push({ url: dataUrl, time: formatTime(timestamps[idx]) });
     } catch (e) {
       console.warn('Frame capture failed at ' + timestamps[idx] + ': ' + e.message);
     }
-
-    // Next frame
-    captureFramesSequentially(video, timestamps, idx + 1, frames, fill, status, blobUrl);
-  });
+    next();
+  }
+  video.addEventListener('seeked', onSeeked);
+  video.currentTime = timestamps[idx];
 }
 
 function formatTime(seconds) {
@@ -1207,9 +1295,15 @@ function formatTime(seconds) {
   return m + ':' + (s < 10 ? '0' : '') + s;
 }
 
-function displayCapturedFrames(frames) {
+function displayCapturedFrames(frames, source) {
   var grid = document.getElementById('frame-capture-grid');
-  if (!grid || frames.length === 0) return;
+  if (!grid) return;
+  setCaptureBusy_(false);
+  var btn = document.getElementById('frame-capture-btn');
+  if (btn) btn.textContent = '🎬 再キャプチャ（別の10フレーム）';
+  var fullBtn = document.getElementById('frame-capture-full-btn');
+  if (fullBtn) fullBtn.style.display = source.complete ? 'none' : '';
+  if (frames.length === 0) return;
 
   var body = document.getElementById('thumb-editor-body');
   var html = '';
@@ -1221,9 +1315,6 @@ function displayCapturedFrames(frames) {
   grid.innerHTML = html;
 
   bindThumbOptionClicks(body);
-
-  var btn = document.getElementById('frame-capture-btn');
-  if (btn) { btn.disabled = false; btn.textContent = '🎬 再キャプチャ（別の10フレーム）'; }
 }
 
 function saveThumbEditor() {
