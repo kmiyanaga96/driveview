@@ -43,6 +43,10 @@ var TAG_KINDS = {
 };
 // この種別のタグを持つ漫画は一覧で1つの「束」にまとめ、巻順に並べる
 var TAG_SERIES_KIND = 'シリーズ';
+// 一覧はこの種別 (作者) の五十音順で並べる
+var TAG_AUTHOR_KIND = '作者';
+// "諫山創(いさやま)" → 名前と読み (読みはひらがな/カタカナのみ。NFKC 後なので括弧は半角)
+var AUTHOR_READING_RE = /^(.+?)\(([ぁ-ゖァ-ヺー・\s]+)\)$/;
 var TAG_KIND_OTHER = 'その他';
 
 // 種別名の別表記（動画/漫画で名前が違う種別や略称も同じ種別として扱う）
@@ -81,10 +85,38 @@ function parseTag(raw, type) {
     var name = v.slice(i + 1).trim();
     if (k !== -1 && name) {
       var kind = TAG_KINDS[type][k];
-      return { raw: kind + ':' + name, kind: kind, name: name, kindIdx: k + 1 };
+      var t = { raw: kind + ':' + name, kind: kind, name: name, kindIdx: k + 1, reading: '' };
+      // 作者は "名前(よみ)" で読みを添えられる。読みは表示せず並び替え (五十音順) に使う
+      if (kind === TAG_AUTHOR_KIND) {
+        var m = AUTHOR_READING_RE.exec(name);
+        if (m) { t.name = m[1].trim(); t.reading = m[2].replace(/\s+/g, ''); }
+        // 他の作品で読みが付いていれば同じ作者として揃える（表記を "名前(よみ)" に正規化）
+        if (!t.reading && authorReadings[t.name]) t.reading = authorReadings[t.name];
+        if (t.reading) t.raw = kind + ':' + t.name + '(' + t.reading + ')';
+      }
+      return t;
     }
   }
-  return { raw: v, kind: '', name: v, kindIdx: 0 };
+  return { raw: v, kind: '', name: v, kindIdx: 0, reading: '' };
+}
+
+// 作者名 → 読み。どこか1つの作品で読みが付いていれば全作品で共有する
+var authorReadings = {};
+
+function rebuildAuthorReadings(items) {
+  var map = {};
+  for (var i = 0; i < items.length; i++) {
+    var parts = items[i].tags ? String(items[i].tags).normalize('NFKC').split(/[,，、\n]/) : [];
+    for (var j = 0; j < parts.length; j++) {
+      var p = parts[j].trim();
+      var c = p.indexOf(':');
+      if (c <= 0 || kindIndexOf(items[i].type, p.slice(0, c).trim()) === -1) continue;
+      if (TAG_KINDS[items[i].type][kindIndexOf(items[i].type, p.slice(0, c).trim())] !== TAG_AUTHOR_KIND) continue;
+      var m = AUTHOR_READING_RE.exec(p.slice(c + 1).trim());
+      if (m && !map[m[1].trim()]) map[m[1].trim()] = m[2].replace(/\s+/g, '');
+    }
+  }
+  authorReadings = map;
 }
 
 // タグ文字列を分割する（カンマ・全角カンマ・読点・改行区切り）
@@ -129,12 +161,22 @@ function indexItem(item) {
   var tags = raws.map(function (r) { return parseTag(r, item.type); }).sort(compareTags);
   item._tagInfo = tags;
   item._series = '';
+  item._authorKey = '';
   for (var s = 0; s < tags.length; s++) {
-    if (tags[s].kind === TAG_SERIES_KIND) { item._series = tags[s].name; break; }
+    if (tags[s].kind === TAG_SERIES_KIND && !item._series) item._series = tags[s].name;
+    if (tags[s].kind === TAG_AUTHOR_KIND && !item._authorKey) {
+      item._authorKey = toHiragana(tags[s].reading || tags[s].name);
+    }
   }
   var text = item.title || '';
   for (var i = 0; i < tags.length; i++) text += '\n' + tags[i].raw;
   item._searchText = normalizeForSearch(text);
+}
+
+function toHiragana(str) {
+  return String(str).replace(/[ァ-ヶ]/g, function (c) {
+    return String.fromCharCode(c.charCodeAt(0) - 0x60);
+  });
 }
 
 function renderCardTags(item) {
@@ -355,6 +397,7 @@ function onContentLoaded(data, fromCache) {
   appState.allContent = data;
 
   // タグと検索用テキストを一度だけ計算しキャッシュ
+  rebuildAuthorReadings(data);
   for (var i = 0; i < data.length; i++) indexItem(data[i]);
 
   extractTags();
@@ -421,6 +464,8 @@ function applyFilters() {
   if (appState.openSeries !== null) {
     filtered = filtered.filter(function (it) { return it._series === appState.openSeries; });
     filtered.sort(compareVolumes);
+  } else {
+    filtered.sort(compareByAuthor);
   }
   appState.filteredContent = filtered;
   appState.galleryEntries = buildGalleryEntries(filtered);
@@ -428,6 +473,18 @@ function applyFilters() {
 }
 
 var _volumeCollator = window.Intl ? new Intl.Collator('ja', { numeric: true, sensitivity: 'base' }) : null;
+
+// 一覧の並び: 作者の五十音順 (読みがあれば読み、無ければ名前) → タイトルの自然順。作者なしは最後
+function compareByAuthor(a, b) {
+  var ka = a._authorKey, kb = b._authorKey;
+  if (ka !== kb) {
+    if (!ka) return 1;
+    if (!kb) return -1;
+    var c = _volumeCollator ? _volumeCollator.compare(ka, kb) : (ka < kb ? -1 : 1);
+    if (c) return c;
+  }
+  return compareVolumes(a, b);
+}
 // 巻の並び: タイトルの自然順 (2巻 < 10巻)
 function compareVolumes(a, b) {
   var ta = a.title || '', tb = b.title || '';
@@ -542,9 +599,11 @@ function bindEvents() {
     tagInputTimer = setTimeout(onTagInput, 60);
   });
   tagInput.addEventListener('keydown', onTagInputKeydown);
-  tagInput.addEventListener('focus', function () { onTagInput(); });
-  tagInput.addEventListener('blur', function () {
-    setTimeout(function () { hideSuggestions(); }, 200);
+  // 候補リストはフォーカスに関係なく常に表示する（表示/非表示の切り替えでレイアウトが動き、
+  // クリックしようとした候補が明滅して押せなくなるのを防ぐ）。クリックは委譲で1つだけ受ける
+  document.getElementById('tag-suggestions').addEventListener('click', function (e) {
+    var item = e.target.closest('.tag-suggestion-item');
+    if (item) addTagToEditor(item.dataset.tag);
   });
 
   // 種別選択（委譲）
@@ -760,6 +819,12 @@ function renderTagBar() {
     var idx = order[o];
     var list = groups[idx];
     if (!list.length) continue;
+    // 作者は一覧と同じ五十音順に並べる
+    if (idx && kinds[idx - 1] === TAG_AUTHOR_KIND && _volumeCollator) {
+      list.sort(function (a, b) {
+        return _volumeCollator.compare(toHiragana(a.reading || a.name), toHiragana(b.reading || b.name));
+      });
+    }
     parts.push('<span class="tag-group-label kind-' + idx + '">' +
       escapeHtml(idx ? kinds[idx - 1] : TAG_KIND_OTHER) + '</span>');
     for (var j = 0; j < list.length; j++) {
@@ -1313,9 +1378,13 @@ function openTagEditor(targetId) {
   renderTagKindSelect();
   renderTagEditorChips();
   document.getElementById('tag-input').value = '';
-  hideSuggestions();
+  onTagInput();
+  document.getElementById('tag-suggestions').scrollTop = 0;
   document.getElementById('tag-editor').classList.add('active');
-  setTimeout(function () { document.getElementById('tag-input').focus(); }, 100);
+  // タッチ端末ではキーボードで候補が隠れるので自動フォーカスしない（スクロールで選べる）
+  if (!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches)) {
+    setTimeout(function () { document.getElementById('tag-input').focus(); }, 100);
+  }
 }
 
 function closeTagEditor() {
@@ -1340,7 +1409,14 @@ function saveTagEditor() {
   var item = appState.allContent.find(function (c) { return c.targetId === targetId; });
   if (item) {
     item.tags = tagsStr;
-    indexItem(item);
+    // 読みが追加・変更された場合は他の作品の作者表記・並び順にも反映する
+    var before = JSON.stringify(authorReadings);
+    rebuildAuthorReadings(appState.allContent);
+    if (JSON.stringify(authorReadings) !== before) {
+      for (var r = 0; r < appState.allContent.length; r++) indexItem(appState.allContent[r]);
+    } else {
+      indexItem(item);
+    }
   }
 
   extractTags();
@@ -1419,9 +1495,8 @@ function addTagToEditor(tag) {
   renderTagEditorChips();
   var input = document.getElementById('tag-input');
   input.value = '';
-  // 続けて選べるよう、入力欄にフォーカスがあれば候補を出し直す
-  if (document.activeElement === input) onTagInput();
-  else hideSuggestions();
+  // 続けて選べるよう候補を出し直す
+  onTagInput();
 }
 
 function onTagInput() {
@@ -1469,19 +1544,7 @@ function onTagInput() {
       '"' + escapeHtml(nt.name) + '" を' + escapeHtml(nt.kind || TAG_KIND_OTHER) + 'として新規作成</div>';
   }
 
-  if (html) {
-    suggestions.innerHTML = html;
-    suggestions.classList.add('visible');
-
-    suggestions.querySelectorAll('.tag-suggestion-item').forEach(function (item) {
-      item.addEventListener('mousedown', function (e) {
-        e.preventDefault();
-        addTagToEditor(this.dataset.tag);
-      });
-    });
-  } else {
-    hideSuggestions();
-  }
+  suggestions.innerHTML = html || '<div class="tag-suggestion-empty">候補はありません</div>';
 }
 
 function onTagInputKeydown(e) {
@@ -1524,7 +1587,6 @@ function highlightSuggestion(items) {
 }
 
 function hideSuggestions() {
-  document.getElementById('tag-suggestions').classList.remove('visible');
   appState.tagSuggestionIndex = -1;
 }
 

@@ -573,7 +573,9 @@ img { display: block; max-width: 100%; }
   background: var(--bg-overlay);
   backdrop-filter: blur(8px);
   z-index: 500;
-  display: flex; align-items: center; justify-content: center;
+  /* 上寄せ: タグ追加でパネルが伸びても入力欄や候補の位置が動かない */
+  display: flex; align-items: flex-start; justify-content: center;
+  padding-top: min(10vh, 80px);
   opacity: 0; pointer-events: none;
   transition: opacity 0.3s ease;
 }
@@ -663,12 +665,14 @@ img { display: block; max-width: 100%; }
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  max-height: 240px; overflow-y: auto;
+  /* 常に表示し高さも固定（候補数でパネルの大きさが変わらない） */
+  height: 220px; max-height: 32vh; overflow-y: auto;
   overscroll-behavior: contain;
-  z-index: 10;
-  display: none;
+  -webkit-overflow-scrolling: touch;
 }
-.tag-suggestions.visible { display: block; }
+.tag-suggestion-empty {
+  padding: 12px 14px; font-size: 13px; color: var(--text-muted);
+}
 .tag-suggestion-item {
   padding: 8px 14px;
   font-size: 13px; color: var(--text-secondary);
