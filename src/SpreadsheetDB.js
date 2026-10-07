@@ -90,6 +90,42 @@ function getChaptersSheet_() {
 }
 
 // ============================================================
+// データ版数 (クライアントキャッシュの鮮度判定)
+// ============================================================
+
+var CONTENT_VERSION_KEY = 'CONTENT_VERSION';
+
+/**
+ * Main シートのデータ版数を返す。未設定なら採番する。
+ * @returns {string}
+ */
+function getContentVersion_() {
+  var props = PropertiesService.getScriptProperties();
+  var version = props.getProperty(CONTENT_VERSION_KEY);
+  if (!version) {
+    version = String(Date.now());
+    props.setProperty(CONTENT_VERSION_KEY, version);
+  }
+  return version;
+}
+
+/**
+ * Main シートへの書き込み後に呼び、データ版数を更新する。
+ */
+function bumpContentVersion_() {
+  PropertiesService.getScriptProperties()
+    .setProperty(CONTENT_VERSION_KEY, String(Date.now()));
+}
+
+/**
+ * スプレッドシートを手動で編集した後に GAS エディタから実行し、
+ * クライアントのキャッシュを無効化する。
+ */
+function refreshContentVersion() {
+  bumpContentVersion_();
+}
+
+// ============================================================
 // Main シート操作
 // ============================================================
 
@@ -190,6 +226,7 @@ function dbBatchUpsertContent(items) {
   if (newRows.length > 0) {
     sheet.getRange(lastRow + 1, 1, newRows.length, 6).setValues(newRows);
   }
+  if (updatedCount > 0 || newRows.length > 0) bumpContentVersion_();
 
   Logger.log(
     'dbBatchUpsertContent: updated=' + updatedCount +
@@ -226,6 +263,7 @@ function dbDeleteContentNotIn_(aliveIds, types) {
     sheet.deleteRows(targetRows[start], end - start + 1);
     end = start - 1;
   }
+  if (targetRows.length > 0) bumpContentVersion_();
   return targetRows.length;
 }
 
@@ -239,6 +277,7 @@ function dbUpdateTags(targetId, tags) {
   var row = findRowByTargetId_(getMainSheet_(), targetId);
   if (!row) return false;
   getMainSheet_().getRange(row, 4).setValue(tags); // 4列目 = Tags
+  bumpContentVersion_();
   return true;
 }
 
@@ -252,6 +291,7 @@ function dbUpdateThumbnail(targetId, thumbnailUrl) {
   var row = findRowByTargetId_(getMainSheet_(), targetId);
   if (!row) return false;
   getMainSheet_().getRange(row, 5).setValue(thumbnailUrl); // 5列目 = Thumbnail_URL
+  bumpContentVersion_();
   return true;
 }
 

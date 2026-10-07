@@ -30,56 +30,89 @@ var appState = {
   hasLocalMutations: false
 };
 
-// === Constants ===
-var CONTENT_CACHE_KEY = 'driveview_content_v1';
-var CONTENT_CACHE_FP_KEY = 'driveview_content_fp_v1';
-
 // === Init ===
 document.addEventListener('DOMContentLoaded', function () {
   bindEvents();
+  showSkeletonCards();
+  clearLegacySessionCache_();
 
-  // Stale-While-Revalidate: 前回セッションのキャッシュがあれば即座に描画
-  var cached = readContentCache();
-  if (cached && cached.length) {
-    onContentLoaded(cached, /* fromCache */ true);
-  } else {
-    showSkeletonCards();
-  }
-
-  // 常にバックエンドから最新を取得し、差分があれば再描画
-  loadAllContent();
+  // Stale-While-Revalidate: 端末のキャッシュがあれば即座に描画し、
+  // その版数をサーバへ送って差分がある場合のみ本体を受け取る
+  ContentCache.read(function (entry) {
+    var version = null;
+    if (entry && entry.items && entry.items.length) {
+      version = entry.version || null;
+      onContentLoaded(entry.items, /* fromCache */ true);
+    }
+    loadAllContent(version);
+  });
 });
 
-function readContentCache() {
-  try {
-    var raw = sessionStorage.getItem(CONTENT_CACHE_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch (e) {
-    return null;
-  }
-}
+// ============================================================
+// Content Cache (IndexedDB)
+// sessionStorage (約5MB) は Base64 サムネイルで容量超過しやすいため IndexedDB を使う。
+// 利用できない環境では何もしない (常にサーバから取得)。
+// ============================================================
 
-function writeContentCache(data, fingerprint) {
-  try {
-    sessionStorage.setItem(CONTENT_CACHE_KEY, JSON.stringify(data));
-    sessionStorage.setItem(CONTENT_CACHE_FP_KEY, String(fingerprint));
-  } catch (e) {
-    // QuotaExceeded など: キャッシュは諦める
-  }
-}
+var ContentCache = (function () {
+  var DB_NAME = 'driveview';
+  var STORE = 'cache';
+  var KEY = 'content';
+  var dbPromise = null;
 
-function computeFingerprint(items) {
-  // 高速チェックサム: 長さ + 各アイテムの (id + tags + thumbnail) を畳み込む
-  var fp = items.length;
-  for (var i = 0; i < items.length; i++) {
-    var it = items[i];
-    var idLen = it.targetId ? it.targetId.length : 0;
-    var tagLen = it.tags ? it.tags.length : 0;
-    var thumbLen = it.thumbnailUrl ? it.thumbnailUrl.length : 0;
-    var titleLen = it.title ? it.title.length : 0;
-    fp = (Math.imul(fp, 31) + idLen + tagLen * 7 + thumbLen * 13 + titleLen * 17) | 0;
+  function open() {
+    if (dbPromise) return dbPromise;
+    dbPromise = new Promise(function (resolve, reject) {
+      if (!window.indexedDB) { reject(new Error('IndexedDB unavailable')); return; }
+      var req = indexedDB.open(DB_NAME, 1);
+      req.onupgradeneeded = function () { req.result.createObjectStore(STORE); };
+      req.onsuccess = function () { resolve(req.result); };
+      req.onerror = function () { reject(req.error); };
+    });
+    return dbPromise;
   }
-  return fp;
+
+  function tx(mode, fn) {
+    return open().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var t = db.transaction(STORE, mode);
+        var result = fn(t.objectStore(STORE));
+        t.oncomplete = function () { resolve(result && result.result); };
+        t.onerror = function () { reject(t.error); };
+        t.onabort = function () { reject(t.error); };
+      });
+    });
+  }
+
+  return {
+    // callback(entry|null)  entry = { version, items }
+    read: function (callback) {
+      tx('readonly', function (store) { return store.get(KEY); })
+        .then(function (entry) { callback(entry || null); })
+        .catch(function () { callback(null); });
+    },
+    write: function (version, items) {
+      var plain = [];
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i];
+        plain.push({
+          targetId: it.targetId, type: it.type, title: it.title, tags: it.tags,
+          thumbnailUrl: it.thumbnailUrl, webViewUrl: it.webViewUrl
+        });
+      }
+      tx('readwrite', function (store) {
+        store.put({ version: version, items: plain }, KEY);
+      }).catch(function () { /* キャッシュは諦める */ });
+    }
+  };
+})();
+
+// 旧実装 (sessionStorage) のキャッシュを削除して容量を空ける
+function clearLegacySessionCache_() {
+  try {
+    sessionStorage.removeItem('driveview_content_v1');
+    sessionStorage.removeItem('driveview_content_fp_v1');
+  } catch (e) { /* ignore */ }
 }
 
 function showSkeletonCards() {
@@ -102,11 +135,11 @@ function showSkeletonCards() {
 // API Wrappers (google.script.run)
 // ============================================================
 
-function loadAllContent() {
+function loadAllContent(cachedVersion) {
   google.script.run
-    .withSuccessHandler(onContentLoaded)
+    .withSuccessHandler(onContentResponse)
     .withFailureHandler(onError)
-    .getAllContent();
+    .getAllContent(cachedVersion);
 }
 
 function loadMangaReaderData(folderId, callback) {
@@ -146,26 +179,28 @@ function saveTags(targetId, tagsStr, callback) {
 // Data Loading
 // ============================================================
 
-function onContentLoaded(data, fromCache) {
-  data = data || [];
-  var fp = computeFingerprint(data);
+function onContentResponse(res) {
+  res = res || {};
 
-  // 楽観更新済み → サーバの古い状態で上書きしない（次回ロードで反映される）
-  if (!fromCache && appState.hasLocalMutations) {
+  // キャッシュが最新: 既に描画済みなので何もしない
+  if (res.notModified) {
     hideLoading();
     return;
   }
 
-  // Stale-While-Revalidate: サーバ応答とキャッシュが同一なら再描画しない
-  if (!fromCache) {
-    var prevFp = sessionStorage.getItem(CONTENT_CACHE_FP_KEY);
-    if (prevFp !== null && String(fp) === prevFp && appState.allContent.length === data.length) {
-      writeContentCache(data, fp);
-      hideLoading();
-      return;
-    }
+  // 楽観更新済み → サーバの古い状態で上書きしない（次回ロードで反映される）
+  if (appState.hasLocalMutations) {
+    hideLoading();
+    return;
   }
 
+  var items = res.items || [];
+  onContentLoaded(items, false);
+  ContentCache.write(res.version, items);
+}
+
+function onContentLoaded(data, fromCache) {
+  data = data || [];
   appState.allContent = data;
 
   // タグを一度だけパースしキャッシュ
@@ -180,8 +215,6 @@ function onContentLoaded(data, fromCache) {
   renderTagBar();
   applyFilters();
   hideLoading();
-
-  if (!fromCache) writeContentCache(data, fp);
 }
 
 function extractTags() {
@@ -1241,13 +1274,11 @@ function cssEscape(str) {
   return String(str).replace(/(["\\\]])/g, '\\$1');
 }
 
-// SWR キャッシュを破棄し、本セッション内の以後のサーバ応答による上書きを抑止する
+// 楽観更新後に呼ぶ。手元の最新状態をキャッシュし（版数は不明なので次回は全件取得）、
+// 本セッション内の以後のサーバ応答による上書きを抑止する
 function invalidateContentCache() {
-  try {
-    sessionStorage.removeItem(CONTENT_CACHE_KEY);
-    sessionStorage.removeItem(CONTENT_CACHE_FP_KEY);
-  } catch (e) { /* ignore */ }
   appState.hasLocalMutations = true;
+  ContentCache.write(null, appState.allContent);
 }
 
 function hideLoading() {

@@ -36,10 +36,16 @@ function include(filename) {
 
 /**
  * 全コンテンツを取得する (ギャラリー初期ロード用)。
- * @returns {Array<Object>}
+ * クライアントが持つキャッシュの版数が最新なら本体を返さず、転送量を抑える。
+ * @param {string=} clientVersion クライアントキャッシュの版数
+ * @returns {{version: string, notModified: boolean, items: (Array<Object>|undefined)}}
  */
-function getAllContent() {
-  return dbGetAllContent();
+function getAllContent(clientVersion) {
+  var version = getContentVersion_();
+  if (clientVersion && String(clientVersion) === version) {
+    return { version: version, notModified: true };
+  }
+  return { version: version, notModified: false, items: dbGetAllContent() };
 }
 
 // getMangaPages()  → MangaService.js で定義済み
