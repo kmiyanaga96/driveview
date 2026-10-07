@@ -977,8 +977,11 @@ function addTagToEditor(tag) {
   if (appState.tagEditorTags.indexOf(tag) !== -1) return;
   appState.tagEditorTags.push(tag);
   renderTagEditorChips();
-  document.getElementById('tag-input').value = '';
-  hideSuggestions();
+  var input = document.getElementById('tag-input');
+  input.value = '';
+  // 続けて選べるよう、入力欄にフォーカスがあれば候補を出し直す
+  if (document.activeElement === input) onTagInput();
+  else hideSuggestions();
 }
 
 function onTagInput() {
@@ -988,16 +991,24 @@ function onTagInput() {
   var type = appState.tagEditorTarget ? appState.tagEditorTarget.type : '';
   appState.tagSuggestionIndex = -1;
 
+  var matches;
   if (!query) {
-    hideSuggestions();
-    return;
+    // 未入力: 既存タグを全件候補にしてスクロールで選べるようにする（Google 検索のサジェスト風）。
+    // 種別ボタンで「その他」以外を選んでいればその種別に絞る。並びは種別順 → 使用数順
+    var kindFilter = appState.tagEditorKind;
+    matches = appState.allTags
+      .filter(function (tag) { return appState.tagEditorTags.indexOf(tag) === -1; })
+      .map(function (tag) { return parseTag(tag, type); })
+      .filter(function (t) { return !kindFilter || t.kind === kindFilter; })
+      .sort(function (a, b) { return (a.kindIdx || Infinity) - (b.kindIdx || Infinity) || 0; })
+      .map(function (t) { return t.raw; });
+  } else {
+    // 入力あり: 名前・種別付き表記のどちらでも部分一致（種別は問わない）
+    matches = appState.allTags.filter(function (tag) {
+      return normalizeForSearch(tag).indexOf(query) !== -1 &&
+             appState.tagEditorTags.indexOf(tag) === -1;
+    });
   }
-
-  // 既存タグを名前・種別付き表記のどちらでも部分一致で候補にする（種別は問わない）
-  var matches = appState.allTags.filter(function (tag) {
-    return normalizeForSearch(tag).indexOf(query) !== -1 &&
-           appState.tagEditorTags.indexOf(tag) === -1;
-  }).slice(0, 8);
 
   var newTag = resolveTagInput(input.value);
   var exactExists = appState.allTags.indexOf(newTag) !== -1;

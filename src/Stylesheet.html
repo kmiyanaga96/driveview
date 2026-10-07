@@ -612,12 +612,14 @@ img { display: block; max-width: 100%; }
 }
 .tag-input::placeholder { color: var(--text-muted); }
 .tag-suggestions {
-  position: absolute; left: 0; right: 0; top: 100%;
+  /* フォーカス中は常に開くので、保存ボタンに重ならないようパネル内に流し込む */
+  position: static;
   margin-top: 4px;
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  max-height: 180px; overflow-y: auto;
+  max-height: 240px; overflow-y: auto;
+  overscroll-behavior: contain;
   z-index: 10;
   display: none;
 }
