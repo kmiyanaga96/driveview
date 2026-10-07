@@ -5,13 +5,17 @@
  * スプレッドシートIDはsetupDatabase()実行時に自動設定される。
  */
 
+var _configCache = null;
+
 /**
  * アプリケーション設定を返す。
+ * 同一リクエスト内では PropertiesService への重複アクセスを避けるためメモ化する。
  * @returns {Object} 設定オブジェクト
  */
 function getConfig() {
+  if (_configCache) return _configCache;
   var props = PropertiesService.getScriptProperties();
-  return {
+  _configCache = {
     // ===== ユーザー設定必須 =====
     // Google Drive上のルートフォルダID (複数指定可)
     VIDEO_FOLDER_IDS: ['1rkp6zzJ9OzqUdv7j_URM5hmHRYP1MB7u'],
@@ -25,8 +29,10 @@ function getConfig() {
     CHAPTERS_SHEET: 'Chapters',
 
     // ===== サムネイル =====
-    THUMB_SIZE_GRID: 'w400-rw',
-    THUMB_SIZE_READER: 'w1200-rw',
+    // 一覧サムネイルの幅(px)。シートには失効しない drive.google.com/thumbnail 形式で保存する
+    THUMB_WIDTH_GRID: 400,
+    // 漫画リーダーのページ画像の幅(px)
+    THUMB_WIDTH_READER: 1200,
 
     // ===== 対応拡張子 =====
     VIDEO_MIMETYPES: [
@@ -45,4 +51,5 @@ function getConfig() {
     // ===== Lazy Loading =====
     MANGA_PAGE_BATCH: 10
   };
+  return _configCache;
 }

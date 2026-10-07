@@ -48,19 +48,25 @@ function setupDatabase() {
 }
 
 // ============================================================
-// ヘルパー
+// ヘルパー (リクエストスコープのメモ化)
 // ============================================================
+
+var _ssCache = null;
+var _mainSheetCache = null;
+var _chaptersSheetCache = null;
 
 /**
  * スプレッドシートを取得する。
  * @returns {GoogleAppsScript.Spreadsheet.Spreadsheet}
  */
 function getSpreadsheet_() {
+  if (_ssCache) return _ssCache;
   var config = getConfig();
   if (!config.SPREADSHEET_ID) {
     throw new Error('Spreadsheet not configured. Run setupDatabase() first.');
   }
-  return SpreadsheetApp.openById(config.SPREADSHEET_ID);
+  _ssCache = SpreadsheetApp.openById(config.SPREADSHEET_ID);
+  return _ssCache;
 }
 
 /**
@@ -68,7 +74,9 @@ function getSpreadsheet_() {
  * @returns {GoogleAppsScript.Spreadsheet.Sheet}
  */
 function getMainSheet_() {
-  return getSpreadsheet_().getSheetByName(getConfig().MAIN_SHEET);
+  if (_mainSheetCache) return _mainSheetCache;
+  _mainSheetCache = getSpreadsheet_().getSheetByName(getConfig().MAIN_SHEET);
+  return _mainSheetCache;
 }
 
 /**
@@ -76,7 +84,45 @@ function getMainSheet_() {
  * @returns {GoogleAppsScript.Spreadsheet.Sheet}
  */
 function getChaptersSheet_() {
-  return getSpreadsheet_().getSheetByName(getConfig().CHAPTERS_SHEET);
+  if (_chaptersSheetCache) return _chaptersSheetCache;
+  _chaptersSheetCache = getSpreadsheet_().getSheetByName(getConfig().CHAPTERS_SHEET);
+  return _chaptersSheetCache;
+}
+
+// ============================================================
+// データ版数 (クライアントキャッシュの鮮度判定)
+// ============================================================
+
+var CONTENT_VERSION_KEY = 'CONTENT_VERSION';
+
+/**
+ * Main シートのデータ版数を返す。未設定なら採番する。
+ * @returns {string}
+ */
+function getContentVersion_() {
+  var props = PropertiesService.getScriptProperties();
+  var version = props.getProperty(CONTENT_VERSION_KEY);
+  if (!version) {
+    version = String(Date.now());
+    props.setProperty(CONTENT_VERSION_KEY, version);
+  }
+  return version;
+}
+
+/**
+ * Main シートへの書き込み後に呼び、データ版数を更新する。
+ */
+function bumpContentVersion_() {
+  PropertiesService.getScriptProperties()
+    .setProperty(CONTENT_VERSION_KEY, String(Date.now()));
+}
+
+/**
+ * スプレッドシートを手動で編集した後に GAS エディタから実行し、
+ * クライアントのキャッシュを無効化する。
+ */
+function refreshContentVersion() {
+  bumpContentVersion_();
 }
 
 // ============================================================
@@ -89,51 +135,29 @@ function getChaptersSheet_() {
  */
 function dbGetAllContent() {
   var sheet = getMainSheet_();
-  var data = sheet.getDataRange().getValues();
-  if (data.length <= 1) return [];
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
 
-  var rows = data.slice(1); // ヘッダー除去
-  return rows.map(function (row) {
-    return {
+  var rows = sheet.getRange(2, 1, lastRow - 1, 6).getValues();
+  var result = [];
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    if (!row[0]) continue;
+    result.push({
       targetId: row[0],
       type: row[1],
       title: row[2],
       tags: row[3] ? String(row[3]) : '',
       thumbnailUrl: row[4],
       webViewUrl: row[5] || ''
-    };
-  });
-}
-
-/**
- * コンテンツをUPSERT（既存なら更新、なければ追加）。
- * @param {Object} item - {targetId, type, title, tags, thumbnailUrl, webViewUrl}
- */
-function dbUpsertContent(item) {
-  var sheet = getMainSheet_();
-  var data = sheet.getDataRange().getValues();
-
-  for (var i = 1; i < data.length; i++) {
-    if (data[i][0] === item.targetId) {
-      // 更新
-      var row = i + 1;
-      sheet.getRange(row, 1, 1, 6).setValues([[
-        item.targetId, item.type, item.title,
-        item.tags, item.thumbnailUrl, item.webViewUrl
-      ]]);
-      return;
-    }
+    });
   }
-
-  // 新規追加
-  sheet.appendRow([
-    item.targetId, item.type, item.title,
-    item.tags, item.thumbnailUrl, item.webViewUrl
-  ]);
+  return result;
 }
 
 /**
  * 複数コンテンツを一括UPSERT（バッチ最適化）。
+ * 既存行は個別に更新、新規行は末尾に一括追加する。
  * @param {Array<Object>} items
  */
 function dbBatchUpsertContent(items) {
@@ -141,20 +165,22 @@ function dbBatchUpsertContent(items) {
 
   var sheet = getMainSheet_();
   var lastRow = sheet.getLastRow();
-  
-  // Retrieve existing sheet data or fall back to header if empty
-  var data = lastRow > 0 ? sheet.getRange(1, 1, lastRow, 6).getValues() : [['Target_ID', 'Type', 'Title', 'Tags', 'Thumbnail_URL', 'WebView_URL']];
 
-  // Map to track row indices by Target_ID
+  // 既存行を1回だけ読み出し、差分判定とカスタムサムネイル保護に使う
+  var existing = lastRow >= 2
+    ? sheet.getRange(2, 1, lastRow - 1, 6).getValues()
+    : [];
   var idxMap = {};
-  for (var i = 1; i < data.length; i++) {
-    idxMap[data[i][0]] = i;
+  for (var r = 0; r < existing.length; r++) {
+    if (existing[r][0]) idxMap[existing[r][0]] = r;
   }
 
-  var isChanged = false;
+  var newRows = [];
+  var updatedCount = 0;
 
-  items.forEach(function (item) {
-    var rowValues = [
+  for (var i = 0; i < items.length; i++) {
+    var item = items[i];
+    var values = [
       item.targetId,
       item.type,
       item.title,
@@ -162,46 +188,83 @@ function dbBatchUpsertContent(items) {
       item.thumbnailUrl,
       item.webViewUrl
     ];
-
     var idx = idxMap[item.targetId];
+    if (idx === -1) continue; // 同一バッチ内で追加済み
     if (idx !== undefined) {
-      var current = data[idx];
+      var current = existing[idx];
 
-      // Preserve user-set thumbnail (Base64 data URL or custom URL)
-      // during sync when incoming URL is a Drive API thumbnailLink
+      // アプリで編集したタグは同期で上書きしない
+      // (Drive の説明欄はシートにタグが無い場合の初期値としてのみ使う)
+      var existingTags = current[3] ? String(current[3]) : '';
+      if (existingTags) values[3] = existingTags;
+
+      // ユーザーが設定した Base64 サムネイルは同期で上書きしない
+      // (同期が返すのは drive.google.com/thumbnail 形式のURLのみ)
       var existingThumb = current[4] ? String(current[4]) : '';
-      var incomingThumb = item.thumbnailUrl || '';
-      var isExistingCustom = existingThumb.indexOf('data:') === 0;
-      var isIncomingDriveApi = incomingThumb.indexOf('lh3.googleusercontent.com') !== -1 ||
-                               incomingThumb === '';
-      if (isExistingCustom && isIncomingDriveApi) {
-        rowValues[4] = existingThumb; // Keep user-set thumbnail
+      if (existingThumb.indexOf('data:') === 0 &&
+          String(values[4] || '').indexOf('data:') !== 0) {
+        values[4] = existingThumb;
       }
 
-      // Memory compare to check for differences
       var diff = false;
       for (var col = 0; col < 6; col++) {
-        if (current[col] !== rowValues[col]) {
+        if (current[col] !== values[col]) {
           diff = true;
           break;
         }
       }
       if (diff) {
-        data[idx] = rowValues;
-        isChanged = true;
+        sheet.getRange(idx + 2, 1, 1, 6).setValues([values]);
+        updatedCount++;
       }
     } else {
-      // Append in memory
-      data.push(rowValues);
-      isChanged = true;
+      idxMap[item.targetId] = -1; // 同一バッチ内の重複追加を防ぐ
+      newRows.push(values);
     }
-  });
-
-  // Perform a single batch write if there are changes
-  if (isChanged) {
-    sheet.getRange(1, 1, data.length, 6).setValues(data);
-    Logger.log('dbBatchUpsertContent: Updated spreadsheet database (Total: ' + data.length + ' rows)');
   }
+
+  if (newRows.length > 0) {
+    sheet.getRange(lastRow + 1, 1, newRows.length, 6).setValues(newRows);
+  }
+  if (updatedCount > 0 || newRows.length > 0) bumpContentVersion_();
+
+  Logger.log(
+    'dbBatchUpsertContent: updated=' + updatedCount +
+    ', appended=' + newRows.length
+  );
+}
+
+/**
+ * 指定種別のうち、生存IDに含まれない行を Main シートから削除する。
+ * 連続する行はまとめて deleteRows し、下から削除して行番号のずれを防ぐ。
+ * @param {Object<string, boolean>} aliveIds Drive 上に存在する Target_ID
+ * @param {Array<string>} types 削除対象とする Type ('Video' / 'Manga')
+ * @returns {number} 削除した行数
+ */
+function dbDeleteContentNotIn_(aliveIds, types) {
+  var sheet = getMainSheet_();
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return 0;
+
+  var rows = sheet.getRange(2, 1, lastRow - 1, 2).getValues();
+  var targetRows = [];
+  for (var i = 0; i < rows.length; i++) {
+    var id = rows[i][0];
+    if (id && types.indexOf(rows[i][1]) !== -1 && !aliveIds[id]) {
+      targetRows.push(i + 2);
+    }
+  }
+
+  // 下から連続区間ごとに削除
+  var end = targetRows.length - 1;
+  while (end >= 0) {
+    var start = end;
+    while (start > 0 && targetRows[start - 1] === targetRows[start] - 1) start--;
+    sheet.deleteRows(targetRows[start], end - start + 1);
+    end = start - 1;
+  }
+  if (targetRows.length > 0) bumpContentVersion_();
+  return targetRows.length;
 }
 
 /**
@@ -211,40 +274,11 @@ function dbBatchUpsertContent(items) {
  * @returns {boolean} 更新成功したか
  */
 function dbUpdateTags(targetId, tags) {
-  var sheet = getMainSheet_();
-  var data = sheet.getDataRange().getValues();
-
-  for (var i = 1; i < data.length; i++) {
-    if (data[i][0] === targetId) {
-      sheet.getRange(i + 1, 4).setValue(tags); // 4列目 = Tags
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * 全コンテンツから一意なタグ一覧を取得する（サジェスト用）。
- * @returns {Array<string>} ユニークなタグの配列（出現回数降順）
- */
-function dbGetAllTags() {
-  var sheet = getMainSheet_();
-  var data = sheet.getDataRange().getValues();
-  var tagCount = {};
-
-  for (var i = 1; i < data.length; i++) {
-    var tagsStr = data[i][3] ? String(data[i][3]) : '';
-    if (tagsStr) {
-      tagsStr.split(',').forEach(function (t) {
-        var tag = t.trim();
-        if (tag) tagCount[tag] = (tagCount[tag] || 0) + 1;
-      });
-    }
-  }
-
-  return Object.keys(tagCount).sort(function (a, b) {
-    return tagCount[b] - tagCount[a];
-  });
+  var row = findRowByTargetId_(getMainSheet_(), targetId);
+  if (!row) return false;
+  getMainSheet_().getRange(row, 4).setValue(tags); // 4列目 = Tags
+  bumpContentVersion_();
+  return true;
 }
 
 /**
@@ -254,15 +288,27 @@ function dbGetAllTags() {
  * @returns {boolean} 更新成功したか
  */
 function dbUpdateThumbnail(targetId, thumbnailUrl) {
-  var sheet = getMainSheet_();
-  var data = sheet.getDataRange().getValues();
+  var row = findRowByTargetId_(getMainSheet_(), targetId);
+  if (!row) return false;
+  getMainSheet_().getRange(row, 5).setValue(thumbnailUrl); // 5列目 = Thumbnail_URL
+  bumpContentVersion_();
+  return true;
+}
 
-  for (var i = 1; i < data.length; i++) {
-    if (data[i][0] === targetId) {
-      sheet.getRange(i + 1, 5).setValue(thumbnailUrl); // 5列目 = Thumbnail_URL
-      return true;
-    }
-  }
-  return false;
+/**
+ * Target_ID 列から該当行番号を見つける。
+ * TextFinder により Apps Script 側でのインデックススキャンに任せる。
+ * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet
+ * @param {string} targetId
+ * @returns {number|null} 行番号（1-indexed）
+ */
+function findRowByTargetId_(sheet, targetId) {
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return null;
+  var match = sheet.getRange(2, 1, lastRow - 1, 1)
+    .createTextFinder(String(targetId))
+    .matchEntireCell(true)
+    .findNext();
+  return match ? match.getRow() : null;
 }
 

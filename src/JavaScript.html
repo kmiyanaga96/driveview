@@ -25,15 +25,95 @@ var appState = {
   tagSuggestionIndex: -1,
   // Thumb editor
   thumbEditorTarget: null,
-  thumbEditorSelected: ''
+  thumbEditorSelected: '',
+  // SWR: 楽観更新が走った後はサーバの古い応答で上書きしない
+  hasLocalMutations: false
 };
 
 // === Init ===
 document.addEventListener('DOMContentLoaded', function () {
-  showSkeletonCards();
-  loadAllContent();
   bindEvents();
+  showSkeletonCards();
+  clearLegacySessionCache_();
+
+  // Stale-While-Revalidate: 端末のキャッシュがあれば即座に描画し、
+  // その版数をサーバへ送って差分がある場合のみ本体を受け取る
+  ContentCache.read(function (entry) {
+    var version = null;
+    if (entry && entry.items && entry.items.length) {
+      version = entry.version || null;
+      onContentLoaded(entry.items, /* fromCache */ true);
+    }
+    loadAllContent(version);
+  });
 });
+
+// ============================================================
+// Content Cache (IndexedDB)
+// sessionStorage (約5MB) は Base64 サムネイルで容量超過しやすいため IndexedDB を使う。
+// 利用できない環境では何もしない (常にサーバから取得)。
+// ============================================================
+
+var ContentCache = (function () {
+  var DB_NAME = 'driveview';
+  var STORE = 'cache';
+  var KEY = 'content';
+  var dbPromise = null;
+
+  function open() {
+    if (dbPromise) return dbPromise;
+    dbPromise = new Promise(function (resolve, reject) {
+      if (!window.indexedDB) { reject(new Error('IndexedDB unavailable')); return; }
+      var req = indexedDB.open(DB_NAME, 1);
+      req.onupgradeneeded = function () { req.result.createObjectStore(STORE); };
+      req.onsuccess = function () { resolve(req.result); };
+      req.onerror = function () { reject(req.error); };
+    });
+    return dbPromise;
+  }
+
+  function tx(mode, fn) {
+    return open().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var t = db.transaction(STORE, mode);
+        var result = fn(t.objectStore(STORE));
+        t.oncomplete = function () { resolve(result && result.result); };
+        t.onerror = function () { reject(t.error); };
+        t.onabort = function () { reject(t.error); };
+      });
+    });
+  }
+
+  return {
+    // callback(entry|null)  entry = { version, items }
+    read: function (callback) {
+      tx('readonly', function (store) { return store.get(KEY); })
+        .then(function (entry) { callback(entry || null); })
+        .catch(function () { callback(null); });
+    },
+    write: function (version, items) {
+      var plain = [];
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i];
+        plain.push({
+          targetId: it.targetId, type: it.type, title: it.title, tags: it.tags,
+          thumbnailUrl: it.thumbnailUrl, webViewUrl: it.webViewUrl
+        });
+      }
+      tx('readwrite', function (store) {
+        store.put({ version: version, items: plain }, KEY);
+      }).catch(function () { /* キャッシュは諦める */ });
+    }
+  };
+})();
+
+// 旧実装 (sessionStorage) のキャッシュを削除して容量を空ける
+function clearLegacySessionCache_() {
+  try {
+    sessionStorage.removeItem('driveview_content_v1');
+    sessionStorage.removeItem('driveview_content_fp_v1');
+  } catch (e) { /* ignore */ }
+}
 
 function showSkeletonCards() {
   var grid = document.getElementById('gallery-grid');
@@ -55,25 +135,18 @@ function showSkeletonCards() {
 // API Wrappers (google.script.run)
 // ============================================================
 
-function loadAllContent() {
+function loadAllContent(cachedVersion) {
   google.script.run
-    .withSuccessHandler(onContentLoaded)
+    .withSuccessHandler(onContentResponse)
     .withFailureHandler(onError)
-    .getAllContent();
+    .getAllContent(cachedVersion);
 }
 
-function loadMangaPages(folderId, callback) {
+function loadMangaReaderData(folderId, callback) {
   google.script.run
     .withSuccessHandler(callback)
     .withFailureHandler(onError)
-    .getMangaPages(folderId);
-}
-
-function loadChapters(targetId, callback) {
-  google.script.run
-    .withSuccessHandler(callback)
-    .withFailureHandler(onError)
-    .getChapters(targetId);
+    .getMangaReaderData(folderId);
 }
 
 function saveChapter(targetId, position, label, callback) {
@@ -102,26 +175,41 @@ function saveTags(targetId, tagsStr, callback) {
     .updateTags(targetId, tagsStr);
 }
 
-function fetchAllTags(callback) {
-  google.script.run
-    .withSuccessHandler(callback)
-    .withFailureHandler(onError)
-    .getAllTags();
-}
-
 // ============================================================
 // Data Loading
 // ============================================================
 
-function onContentLoaded(data) {
-  appState.allContent = data || [];
+function onContentResponse(res) {
+  res = res || {};
 
-  // #8: Parse tags once and cache for fast filtering
-  appState.allContent.forEach(function (item) {
+  // キャッシュが最新: 既に描画済みなので何もしない
+  if (res.notModified) {
+    hideLoading();
+    return;
+  }
+
+  // 楽観更新済み → サーバの古い状態で上書きしない（次回ロードで反映される）
+  if (appState.hasLocalMutations) {
+    hideLoading();
+    return;
+  }
+
+  var items = res.items || [];
+  onContentLoaded(items, false);
+  ContentCache.write(res.version, items);
+}
+
+function onContentLoaded(data, fromCache) {
+  data = data || [];
+  appState.allContent = data;
+
+  // タグを一度だけパースしキャッシュ
+  for (var i = 0; i < data.length; i++) {
+    var item = data[i];
     item._parsedTags = item.tags
       ? item.tags.split(',').map(function (t) { return t.trim(); }).filter(Boolean)
       : [];
-  });
+  }
 
   extractTags();
   renderTagBar();
@@ -130,19 +218,21 @@ function onContentLoaded(data) {
 }
 
 function extractTags() {
-  var tagSet = {};
+  var tagCount = {};
   var type = appState.selectedType;
-  appState.allContent.forEach(function (item) {
-    if (item.type === type && item.tags) {
-      item.tags.split(',').forEach(function (t) {
-        var tag = t.trim();
-        if (tag) tagSet[tag] = (tagSet[tag] || 0) + 1;
-      });
+  var src = appState.allContent;
+  for (var i = 0; i < src.length; i++) {
+    var item = src[i];
+    if (item.type !== type) continue;
+    var parsed = item._parsedTags;
+    if (!parsed || !parsed.length) continue;
+    for (var j = 0; j < parsed.length; j++) {
+      var tag = parsed[j];
+      tagCount[tag] = (tagCount[tag] || 0) + 1;
     }
-  });
-  // Sort by frequency
-  appState.allTags = Object.keys(tagSet).sort(function (a, b) {
-    return tagSet[b] - tagSet[a];
+  }
+  appState.allTags = Object.keys(tagCount).sort(function (a, b) {
+    return tagCount[b] - tagCount[a];
   });
 }
 
@@ -153,25 +243,27 @@ function extractTags() {
 function applyFilters() {
   var query = appState.searchQuery.toLowerCase();
   var tags = appState.selectedTags;
+  var hasTagFilter = tags.length > 0;
   var type = appState.selectedType;
+  var typeAll = type === 'All';
 
-  appState.filteredContent = appState.allContent.filter(function (item) {
-    // Type filter
-    if (type !== 'All' && item.type !== type) return false;
-
-    // Search filter
-    if (query && item.title.toLowerCase().indexOf(query) === -1) return false;
-
-    // Tag filter (#8: use cached parsed tags)
-    if (tags.length > 0) {
+  var filtered = [];
+  var src = appState.allContent;
+  for (var i = 0; i < src.length; i++) {
+    var item = src[i];
+    if (!typeAll && item.type !== type) continue;
+    if (query && (!item.title || item.title.toLowerCase().indexOf(query) === -1)) continue;
+    if (hasTagFilter) {
       var itemTags = item._parsedTags || [];
-      var match = tags.every(function (t) { return itemTags.indexOf(t) !== -1; });
-      if (!match) return false;
+      var ok = true;
+      for (var j = 0; j < tags.length; j++) {
+        if (itemTags.indexOf(tags[j]) === -1) { ok = false; break; }
+      }
+      if (!ok) continue;
     }
-
-    return true;
-  });
-
+    filtered.push(item);
+  }
+  appState.filteredContent = filtered;
   renderGallery();
 }
 
@@ -180,13 +272,16 @@ function applyFilters() {
 // ============================================================
 
 function bindEvents() {
-  // #2: Debounce search input to avoid re-rendering on every keystroke
+  setupGalleryDelegation();
+  setupTagBarDelegation();
+
+  // Search input (短めの debounce で体感を維持)
   var searchInput = document.getElementById('search-input');
   var searchTimer = null;
   searchInput.addEventListener('input', function () {
     appState.searchQuery = this.value;
     clearTimeout(searchTimer);
-    searchTimer = setTimeout(function () { applyFilters(); }, 200);
+    searchTimer = setTimeout(function () { applyFilters(); }, 100);
   });
 
   // Type tabs
@@ -231,11 +326,14 @@ function bindEvents() {
   document.getElementById('tag-editor-save').addEventListener('click', saveTagEditor);
 
   var tagInput = document.getElementById('tag-input');
-  tagInput.addEventListener('input', onTagInput);
+  var tagInputTimer = null;
+  tagInput.addEventListener('input', function () {
+    clearTimeout(tagInputTimer);
+    tagInputTimer = setTimeout(onTagInput, 60);
+  });
   tagInput.addEventListener('keydown', onTagInputKeydown);
   tagInput.addEventListener('focus', function () { onTagInput(); });
   tagInput.addEventListener('blur', function () {
-    // Delay to allow suggestion click
     setTimeout(function () { hideSuggestions(); }, 200);
   });
 
@@ -262,13 +360,13 @@ function bindEvents() {
 // Rendering - Gallery
 // ============================================================
 
+var TITLE_EXT_RE = /\.(mp4|mkv|avi|mov|webm|zip|rar|7z|pdf)$/i;
+
 function renderGallery() {
   var grid = document.getElementById('gallery-grid');
   var stats = document.getElementById('gallery-stats');
 
-  // Dynamic grid setup for layout optimization
   grid.dataset.viewType = appState.selectedType;
-
   stats.textContent = appState.filteredContent.length + ' 件のコンテンツ';
 
   if (appState.filteredContent.length === 0) {
@@ -280,82 +378,99 @@ function renderGallery() {
     return;
   }
 
-  var html = '';
-  appState.filteredContent.forEach(function (item, idx) {
+  // 文字列連結のみで一括 innerHTML。リスナーは委譲で一括処理。
+  var parts = [];
+  var items = appState.filteredContent;
+  for (var idx = 0; idx < items.length; idx++) {
+    var item = items[idx];
     var tagHtml = '';
-    if (item.tags) {
-      var parsedTags = item.tags.split(',').map(function(t){return t.trim();}).filter(Boolean);
-      parsedTags.sort(function(a, b){ return a.localeCompare(b, 'ja'); });
-      parsedTags.forEach(function (tag) {
-        tagHtml += '<span class="card-tag">' + escapeHtml(tag) + '</span>';
-      });
+    var parsed = item._parsedTags;
+    if (parsed && parsed.length) {
+      var sorted = parsed.slice().sort(function (a, b) { return a.localeCompare(b, 'ja'); });
+      for (var t = 0; t < sorted.length; t++) {
+        tagHtml += '<span class="card-tag">' + escapeHtml(sorted[t]) + '</span>';
+      }
     }
 
-    var displayTitle = item.title.replace(/\.(mp4|mkv|avi|mov|webm|zip|rar|7z|pdf)$/i, '');
+    var displayTitle = item.title ? item.title.replace(TITLE_EXT_RE, '') : '';
+    var delay = idx < 10 ? (idx * 0.03).toFixed(2) : '0.30';
+    var targetEsc = escapeHtml(item.targetId);
 
-    html +=
-      '<div class="card" data-index="' + idx + '" data-type="' + item.type + '" style="animation-delay:' + Math.min(idx * 0.03, 0.3) + 's">' +
-        '<div class="card-thumb" style="cursor:pointer;">' +
-          '<img src="' + escapeHtml(item.thumbnailUrl || '') + '" alt="" loading="lazy" onerror="this.style.display=\'none\'">' +
+    parts.push(
+      '<div class="card" data-index="' + idx + '" data-target="' + targetEsc + '" data-type="' + item.type + '" style="animation-delay:' + delay + 's">' +
+        '<div class="card-thumb">' +
+          '<img src="' + escapeHtml(item.thumbnailUrl || '') + '" alt="" loading="lazy" decoding="async" onerror="this.style.display=\'none\'">' +
         '</div>' +
         '<div class="card-body">' +
-          '<div class="card-title" style="cursor:pointer;">' + escapeHtml(displayTitle) + '</div>' +
+          '<div class="card-title">' + escapeHtml(displayTitle) + '</div>' +
           '<div class="card-tags">' + tagHtml + '</div>' +
           '<div class="card-actions">' +
-            '<span class="card-action-btn tag-edit-btn" data-target="' + escapeHtml(item.targetId) + '">✏️ タグ</span>' +
-            '<span class="card-action-btn thumb-edit-btn" data-target="' + escapeHtml(item.targetId) + '">🖼️ サムネ</span>' +
+            '<span class="card-action-btn tag-edit-btn">✏️ タグ</span>' +
+            '<span class="card-action-btn thumb-edit-btn">🖼️ サムネ</span>' +
           '</div>' +
         '</div>' +
-      '</div>';
-  });
-  grid.innerHTML = html;
+      '</div>'
+    );
+  }
+  grid.innerHTML = parts.join('');
+}
 
-  // Card click events (thumb and title navigate)
-  grid.querySelectorAll('.card-thumb, .card-title').forEach(function (el) {
-    el.addEventListener('click', function (e) {
-      var card = this.closest('.card');
-      var idx = parseInt(card.dataset.index);
+// gallery-grid 用のイベント委譲（1度だけバインド）
+function setupGalleryDelegation() {
+  var grid = document.getElementById('gallery-grid');
+  grid.addEventListener('click', function (e) {
+    var target = e.target;
+
+    if (target.closest('.tag-edit-btn')) {
+      e.stopPropagation();
+      var card = target.closest('.card');
+      if (card) openTagEditor(card.dataset.target);
+      return;
+    }
+
+    if (target.closest('.thumb-edit-btn')) {
+      e.stopPropagation();
+      var card2 = target.closest('.card');
+      if (card2) openThumbEditor(card2.dataset.target);
+      return;
+    }
+
+    if (target.closest('.card-thumb') || target.closest('.card-title')) {
+      var card3 = target.closest('.card');
+      if (!card3) return;
+      var idx = parseInt(card3.dataset.index, 10);
       var item = appState.filteredContent[idx];
+      if (!item) return;
       if (item.type === 'Video') openVideoModal(item);
       else if (item.type === 'Manga') openMangaReader(item);
-    });
-  });
-
-  // Tag edit button
-  grid.querySelectorAll('.tag-edit-btn').forEach(function (btn) {
-    btn.addEventListener('click', function (e) {
-      e.stopPropagation();
-      openTagEditor(this.dataset.target);
-    });
-  });
-
-  // Thumb edit button
-  grid.querySelectorAll('.thumb-edit-btn').forEach(function (btn) {
-    btn.addEventListener('click', function (e) {
-      e.stopPropagation();
-      openThumbEditor(this.dataset.target);
-    });
+    }
   });
 }
 
 function renderTagBar() {
   var bar = document.getElementById('tag-bar');
-  var html = '';
-  appState.allTags.forEach(function (tag) {
-    var active = appState.selectedTags.indexOf(tag) !== -1 ? ' active' : '';
-    html += '<button class="tag-chip' + active + '" data-tag="' + escapeHtml(tag) + '">' + escapeHtml(tag) + '</button>';
-  });
-  bar.innerHTML = html;
+  var parts = [];
+  var selected = appState.selectedTags;
+  for (var i = 0; i < appState.allTags.length; i++) {
+    var tag = appState.allTags[i];
+    var active = selected.indexOf(tag) !== -1 ? ' active' : '';
+    var esc = escapeHtml(tag);
+    parts.push('<button class="tag-chip' + active + '" data-tag="' + esc + '">' + esc + '</button>');
+  }
+  bar.innerHTML = parts.join('');
+}
 
-  bar.querySelectorAll('.tag-chip').forEach(function (chip) {
-    chip.addEventListener('click', function () {
-      var tag = this.dataset.tag;
-      var idx = appState.selectedTags.indexOf(tag);
-      if (idx === -1) appState.selectedTags.push(tag);
-      else appState.selectedTags.splice(idx, 1);
-      this.classList.toggle('active');
-      applyFilters();
-    });
+function setupTagBarDelegation() {
+  var bar = document.getElementById('tag-bar');
+  bar.addEventListener('click', function (e) {
+    var chip = e.target.closest('.tag-chip');
+    if (!chip) return;
+    var tag = chip.dataset.tag;
+    var idx = appState.selectedTags.indexOf(tag);
+    if (idx === -1) appState.selectedTags.push(tag);
+    else appState.selectedTags.splice(idx, 1);
+    chip.classList.toggle('active');
+    applyFilters();
   });
 }
 
@@ -396,21 +511,22 @@ function openMangaReader(item) {
   var displayTitle = item.title.replace(/\.(mp4|mkv|avi|mov|webm|zip|rar|7z|pdf)$/i, '');
   document.getElementById('manga-reader-title').textContent = displayTitle;
   document.getElementById('manga-page-indicator').textContent = '読み込み中...';
-  document.getElementById('manga-pages').innerHTML =
-    '<div class="empty-state"><div class="loading-spinner"></div><div class="loading-text">ページを読み込み中...</div></div>';
+  // リーダーの DOM は永続化（再ビルドや多重リスナーを避ける）。
+  // ロード中はページ番号インジケーターのみで表現する。
+  ensureMangaReaderDom_();
+  var img = document.getElementById('manga-pages').querySelector('.manga-page-img');
+  if (img) img.removeAttribute('src');
   document.getElementById('chapter-list').innerHTML = '';
   document.getElementById('chapter-sidebar').classList.remove('open');
 
   document.getElementById('manga-reader').classList.add('active');
 
-  loadMangaPages(item.targetId, function (pages) {
-    appState.mangaPages = pages || [];
+  loadMangaReaderData(item.targetId, function (data) {
+    data = data || {};
+    appState.mangaPages = data.pages || [];
+    appState.mangaChapters = data.chapters || [];
     renderCurrentPage();
     setupMangaNavigation();
-  });
-
-  loadChapters(item.targetId, function (chapters) {
-    appState.mangaChapters = chapters || [];
     renderChapterList();
   });
 }
@@ -423,38 +539,69 @@ function closeMangaReader() {
   removeMangaNavigation();
 }
 
-function renderCurrentPage() {
+// 一度だけ生成し、ページ送りでは img.src と番号テキストのみ更新する
+function ensureMangaReaderDom_() {
   var container = document.getElementById('manga-pages');
+  if (container._built) return container;
+
+  container.innerHTML =
+    '<img class="manga-page-img" alt="" fetchpriority="high" decoding="async">' +
+    '<div class="manga-tap-zone left"></div>' +
+    '<div class="manga-tap-zone right"></div>' +
+    '<button class="manga-nav-btn prev">❮</button>' +
+    '<button class="manga-nav-btn next">❯</button>' +
+    '<div class="manga-page-number"></div>';
+
+  // 委譲: container 内の click 1つで left/right/prev/next を捌く
+  container.addEventListener('click', function (e) {
+    if (e.target.closest('.manga-tap-zone.left') || e.target.closest('.manga-nav-btn.prev')) {
+      mangaPagePrev();
+    } else if (e.target.closest('.manga-tap-zone.right') || e.target.closest('.manga-nav-btn.next')) {
+      mangaPageNext();
+    }
+  });
+
+  container._built = true;
+  return container;
+}
+
+function renderCurrentPage() {
+  var container = ensureMangaReaderDom_();
   var total = appState.mangaPages.length;
   var idx = appState.currentPageIndex;
 
+  var emptyMsg = container.querySelector('.manga-empty');
   if (total === 0) {
-    container.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📖</div><div class="empty-state-text">ページが見つかりません</div></div>';
+    if (!emptyMsg) {
+      var empty = document.createElement('div');
+      empty.className = 'empty-state manga-empty';
+      empty.innerHTML = '<div class="empty-state-icon">📖</div><div class="empty-state-text">ページが見つかりません</div>';
+      container.appendChild(empty);
+    }
+    var imgEmpty = container.querySelector('.manga-page-img');
+    if (imgEmpty) imgEmpty.removeAttribute('src');
+    container.querySelector('.manga-page-number').textContent = '';
     return;
   }
+  if (emptyMsg) emptyMsg.remove();
 
+  var img = container.querySelector('.manga-page-img');
+  var pageNum = container.querySelector('.manga-page-number');
   var page = appState.mangaPages[idx];
-  container.innerHTML =
-    '<img src="' + escapeHtml(page.url) + '" alt="Page ' + (idx + 1) + '">' +
-    '<div class="manga-tap-zone left" id="manga-tap-left"></div>' +
-    '<div class="manga-tap-zone right" id="manga-tap-right"></div>' +
-    '<button class="manga-nav-btn prev" id="manga-nav-prev">❮</button>' +
-    '<button class="manga-nav-btn next" id="manga-nav-next">❯</button>' +
-    '<div class="manga-page-number">' + (idx + 1) + ' / ' + total + '</div>';
 
-  // Preload adjacent pages
-  if (idx + 1 < total) { var pre = new Image(); pre.src = appState.mangaPages[idx + 1].url; }
-  if (idx - 1 >= 0) { var prePrev = new Image(); prePrev.src = appState.mangaPages[idx - 1].url; }
+  img.src = page.url;
+  img.alt = 'Page ' + (idx + 1);
+  pageNum.textContent = (idx + 1) + ' / ' + total;
 
-  // Rebind tap zone events
-  var leftZone = document.getElementById('manga-tap-left');
-  var rightZone = document.getElementById('manga-tap-right');
-  var prevBtn = document.getElementById('manga-nav-prev');
-  var nextBtn = document.getElementById('manga-nav-next');
-  if (leftZone) leftZone.addEventListener('click', function () { mangaPagePrev(); });
-  if (rightZone) rightZone.addEventListener('click', function () { mangaPageNext(); });
-  if (prevBtn) prevBtn.addEventListener('click', function () { mangaPagePrev(); });
-  if (nextBtn) nextBtn.addEventListener('click', function () { mangaPageNext(); });
+  // 前後 2 ページを先読み（ブラウザのキャッシュに乗せておく）
+  for (var off = -2; off <= 2; off++) {
+    if (off === 0) continue;
+    var p = idx + off;
+    if (p >= 0 && p < total) {
+      var pre = new Image();
+      pre.src = appState.mangaPages[p].url;
+    }
+  }
 
   updatePageIndicator();
 }
@@ -543,14 +690,22 @@ function addCurrentChapter() {
 
   var targetId = appState.currentItem.targetId;
   var position = appState.currentPageIndex;
+  var trimmed = label.trim();
 
-  saveChapter(targetId, position, label.trim(), function (chapter) {
-    appState.mangaChapters.push(chapter);
-    appState.mangaChapters.sort(function (a, b) { return a.position - b.position; });
-    renderChapterList();
+  // Optimistic UI: 仮IDで先に描画し、サーバ確定で差し替える
+  var tempId = 'temp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
+  var optimistic = { chapterId: tempId, targetId: targetId, position: position, label: trimmed };
+  appState.mangaChapters.push(optimistic);
+  appState.mangaChapters.sort(function (a, b) { return a.position - b.position; });
+  renderChapterList();
+  if (!appState.chapterSidebarOpen) toggleChapterSidebar();
 
-    // サイドバーを自動で開く
-    if (!appState.chapterSidebarOpen) toggleChapterSidebar();
+  saveChapter(targetId, position, trimmed, function (chapter) {
+    var idx = appState.mangaChapters.findIndex(function (c) { return c.chapterId === tempId; });
+    if (idx !== -1) {
+      appState.mangaChapters[idx] = chapter;
+      renderChapterList();
+    }
   });
 }
 
@@ -562,45 +717,49 @@ function renderChapterList() {
     return;
   }
 
-  var html = '';
-  appState.mangaChapters.forEach(function (ch) {
-    html +=
+  var parts = [];
+  for (var i = 0; i < appState.mangaChapters.length; i++) {
+    var ch = appState.mangaChapters[i];
+    parts.push(
       '<div class="chapter-item" data-position="' + ch.position + '" data-id="' + escapeHtml(ch.chapterId) + '">' +
         '<div class="chapter-item-info">' +
           '<div class="chapter-item-label">' + escapeHtml(ch.label) + '</div>' +
           '<div class="chapter-item-page">' + (ch.position + 1) + ' ページ</div>' +
         '</div>' +
         '<button class="chapter-delete-btn" title="削除">✕</button>' +
-      '</div>';
-  });
-  list.innerHTML = html;
+      '</div>'
+    );
+  }
+  list.innerHTML = parts.join('');
 
-  // Click to jump
-  list.querySelectorAll('.chapter-item').forEach(function (item) {
-    item.addEventListener('click', function (e) {
-      if (e.target.closest('.chapter-delete-btn')) return;
-      var pos = parseInt(this.dataset.position);
-      jumpToPage(pos);
-    });
-  });
+  // 委譲リスナーは初回のみセットアップ
+  if (!list._delegated) {
+    list._delegated = true;
+    list.addEventListener('click', function (e) {
+      var delBtn = e.target.closest('.chapter-delete-btn');
+      if (delBtn) {
+        e.stopPropagation();
+        var item = delBtn.closest('.chapter-item');
+        var chapterId = item.dataset.id;
+        if (!confirm('このチャプターを削除しますか？')) return;
 
-  // Delete
-  list.querySelectorAll('.chapter-delete-btn').forEach(function (btn) {
-    btn.addEventListener('click', function (e) {
-      e.stopPropagation();
-      var item = this.closest('.chapter-item');
-      var chapterId = item.dataset.id;
-
-      if (!confirm('このチャプターを削除しますか？')) return;
-
-      removeChapter(chapterId, function () {
+        // Optimistic UI: 即座にUIから削除
         appState.mangaChapters = appState.mangaChapters.filter(function (c) {
           return c.chapterId !== chapterId;
         });
         renderChapterList();
-      });
+
+        removeChapter(chapterId, function () { /* background */ });
+        return;
+      }
+
+      var row = e.target.closest('.chapter-item');
+      if (row) {
+        var pos = parseInt(row.dataset.position, 10);
+        jumpToPage(pos);
+      }
     });
-  });
+  }
 }
 
 // ============================================================
@@ -637,39 +796,38 @@ function saveTagEditor() {
   if (!appState.tagEditorTarget) return;
 
   var targetId = appState.tagEditorTarget.targetId;
-  var sortedTags = appState.tagEditorTags.slice().sort(function(a,b){return a.localeCompare(b, 'ja');});
+  var sortedTags = appState.tagEditorTags.slice().sort(function (a, b) {
+    return a.localeCompare(b, 'ja');
+  });
   var tagsStr = sortedTags.join(', ');
 
-  // Optimistic Update (Immediate UI Reflection)
+  // Optimistic Update
   var item = appState.allContent.find(function (c) { return c.targetId === targetId; });
   if (item) {
     item.tags = tagsStr;
-    item._parsedTags = sortedTags; // Update cache
+    item._parsedTags = sortedTags.slice();
   }
 
   extractTags();
   renderTagBar();
-  
-  // Directly update only the affected card to avoid heavy full-grid re-render
-  var cardIdx = appState.filteredContent.findIndex(function (c) { return c.targetId === targetId; });
-  if (cardIdx !== -1) {
-    var cardEl = document.querySelector('.card[data-index="' + cardIdx + '"]');
-    if (cardEl) {
-      var tagsContainer = cardEl.querySelector('.card-tags');
-      if (tagsContainer) {
-        var html = '';
-        sortedTags.forEach(function(tag){
-          html += '<span class="card-tag">' + escapeHtml(tag) + '</span>';
-        });
-        tagsContainer.innerHTML = html;
+
+  // 該当カードのみ差分更新
+  var cardEl = document.querySelector('.card[data-target="' + cssEscape(targetId) + '"]');
+  if (cardEl) {
+    var tagsContainer = cardEl.querySelector('.card-tags');
+    if (tagsContainer) {
+      var html = '';
+      for (var i = 0; i < sortedTags.length; i++) {
+        html += '<span class="card-tag">' + escapeHtml(sortedTags[i]) + '</span>';
       }
+      tagsContainer.innerHTML = html;
     }
   }
 
   closeTagEditor();
+  invalidateContentCache();
 
-  // Save to backend quietly in background
-  saveTags(targetId, tagsStr, function () { /* Background save complete */ });
+  saveTags(targetId, tagsStr, function () { /* background */ });
 }
 
 function renderTagEditorChips() {
@@ -814,6 +972,7 @@ function closeThumbEditor() {
   document.getElementById('thumb-editor').classList.remove('active');
   appState.thumbEditorTarget = null;
   appState.thumbEditorSelected = '';
+  appState.captureSource = null; // 取得済み動画データを解放
 }
 
 function renderThumbEditor(data) {
@@ -833,6 +992,7 @@ function renderThumbEditor(data) {
   if (item && item.type === 'Video') {
     html += '<div class="thumb-editor-section-label">動画からキャプチャ</div>';
     html += '<button id="frame-capture-btn" class="frame-capture-btn">🎬 動画から10フレームを自動生成</button>';
+    html += '<button id="frame-capture-full-btn" class="frame-capture-btn secondary" style="display:none">🎞 動画全体から選ぶ（全体をダウンロード）</button>';
     html += '<div id="frame-capture-progress" class="frame-capture-progress" style="display:none">';
     html += '<div class="frame-capture-progress-bar"><div id="frame-capture-fill" class="frame-capture-progress-fill" style="width:0%"></div></div>';
     html += '<div id="frame-capture-status" class="frame-capture-status">準備中...</div>';
@@ -847,9 +1007,13 @@ function renderThumbEditor(data) {
   var captureBtn = document.getElementById('frame-capture-btn');
   if (captureBtn) {
     captureBtn.addEventListener('click', function () {
-      this.disabled = true;
-      this.textContent = '⏳ 動画を読み込み中...';
-      startFrameCapture(item.targetId);
+      startFrameCapture(item.targetId, false);
+    });
+  }
+  var captureFullBtn = document.getElementById('frame-capture-full-btn');
+  if (captureFullBtn) {
+    captureFullBtn.addEventListener('click', function () {
+      startFrameCapture(item.targetId, true);
     });
   }
 }
@@ -868,67 +1032,129 @@ function bindThumbOptionClicks(container) {
 // Video Frame Capture
 // ============================================================
 
-function startFrameCapture(fileId) {
+// 先頭だけ取得して素早くフレームを出す。動画の長さに対して取得済みの割合の範囲から切り出す。
+var CAPTURE_HEAD_BYTES = 32 * 1024 * 1024;
+var CAPTURE_SEEK_TIMEOUT_MS = 4000;
+
+function setCaptureBusy_(busy) {
+  var btn = document.getElementById('frame-capture-btn');
+  var fullBtn = document.getElementById('frame-capture-full-btn');
+  if (btn) btn.disabled = busy;
+  if (fullBtn) fullBtn.disabled = busy;
+  if (busy && btn) btn.textContent = '⏳ 動画を読み込み中...';
+}
+
+function showCaptureError_(status, message) {
+  status.textContent = message;
+  setCaptureBusy_(false);
+  var btn = document.getElementById('frame-capture-btn');
+  if (btn) btn.textContent = '🎬 再試行';
+}
+
+/**
+ * @param {string} fileId
+ * @param {boolean} full true なら動画全体を取得する
+ */
+function startFrameCapture(fileId, full) {
   var progress = document.getElementById('frame-capture-progress');
   var fill = document.getElementById('frame-capture-fill');
   var status = document.getElementById('frame-capture-status');
   progress.style.display = 'block';
+  setCaptureBusy_(true);
+
+  // 取得済みのデータで足りるなら再ダウンロードしない（再キャプチャが即時になる）
+  var cached = appState.captureSource;
+  if (cached && cached.fileId === fileId && (cached.complete || !full)) {
+    captureFramesFromSource(cached, fill, status);
+    return;
+  }
+
   status.textContent = 'アクセス情報を取得中...';
   fill.style.width = '5%';
 
   google.script.run
     .withSuccessHandler(function (info) {
       status.textContent = 'ダウンロード準備中...';
-      fill.style.width = '5%';
-      fetchVideoAndCapture(info, fill, status);
+      fetchVideoSource(info, full, fill, status)
+        .then(function (source) {
+          appState.captureSource = source;
+          captureFramesFromSource(source, fill, status);
+        })
+        .catch(function (err) {
+          showCaptureError_(status, 'エラー: ' + err.message);
+        });
     })
     .withFailureHandler(function (err) {
-      status.textContent = 'エラー: ' + (err.message || err);
-      var btn = document.getElementById('frame-capture-btn');
-      if (btn) { btn.disabled = false; btn.textContent = '🎬 再試行'; }
+      showCaptureError_(status, 'エラー: ' + (err.message || err));
     })
     .getVideoAccessInfo(fileId);
 }
 
-function fetchVideoAndCapture(info, fill, status) {
-  var url = 'https://www.googleapis.com/drive/v3/files/' + info.fileId + '?alt=media';
+/**
+ * 動画データを取得する。full=false なら先頭 CAPTURE_HEAD_BYTES のみを Range で取得する。
+ * @returns {Promise<{fileId: string, blob: Blob, complete: boolean, fraction: number}>}
+ */
+function fetchVideoSource(info, full, fill, status) {
+  var base = 'https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(info.fileId);
+  var auth = { 'Authorization': 'Bearer ' + info.token };
 
-  fetch(url, {
-    headers: { 'Authorization': 'Bearer ' + info.token }
-  })
-  .then(function (response) {
+  if (full) {
+    return fetchWithProgress_(base + '?alt=media&supportsAllDrives=true', auth, fill, status)
+      .then(function (r) {
+        return { fileId: info.fileId, blob: r.blob, complete: true, fraction: 1 };
+      });
+  }
+
+  var sizeReq = fetch(base + '?fields=size&supportsAllDrives=true', { headers: auth })
+    .then(function (res) { return res.ok ? res.json() : {}; })
+    .then(function (meta) { return parseInt(meta.size || '0', 10); })
+    .catch(function () { return 0; });
+
+  var headers = { 'Authorization': auth.Authorization, 'Range': 'bytes=0-' + (CAPTURE_HEAD_BYTES - 1) };
+  var headReq = fetchWithProgress_(base + '?alt=media&supportsAllDrives=true', headers, fill, status);
+
+  return Promise.all([sizeReq, headReq]).then(function (results) {
+    var size = results[0];
+    var r = results[1];
+    // 200 = Range 非対応で全体が返った / サイズ以下 = 全体を取得済み
+    var complete = r.status !== 206 || (size > 0 && r.blob.size >= size);
+    var fraction = complete ? 1 : (size > 0 ? r.blob.size / size : 0);
+    return { fileId: info.fileId, blob: r.blob, complete: complete, fraction: fraction };
+  });
+}
+
+// ストリームで読みながら進捗バー (5%〜50%) を更新する
+function fetchWithProgress_(url, headers, fill, status) {
+  return fetch(url, { headers: headers }).then(function (response) {
     if (!response.ok) throw new Error('動画の取得に失敗 (' + response.status + ')');
-    
-    // Check if browser supports Streams API
+
     if (!response.body) {
       status.textContent = '動画をダウンロード中...';
-      return response.blob();
+      return response.blob().then(function (blob) { return { status: response.status, blob: blob }; });
     }
 
     var reader = response.body.getReader();
-    var total = info.fileSize || 0;
+    var total = parseInt(response.headers.get('Content-Length') || '0', 10);
     var loaded = 0;
     var chunks = [];
 
-    return new Promise(function(resolve, reject) {
+    return new Promise(function (resolve, reject) {
       function read() {
-        reader.read().then(function(result) {
+        reader.read().then(function (result) {
           if (result.done) {
-            status.textContent = '動画データを結合中...';
-            resolve(new Blob(chunks));
+            resolve({ status: response.status, blob: new Blob(chunks) });
             return;
           }
           chunks.push(result.value);
           loaded += result.value.length;
-          
+
+          var mbLoaded = (loaded / (1024 * 1024)).toFixed(1);
           if (total > 0) {
             var percent = Math.round((loaded / total) * 100);
-            var mbLoaded = (loaded / (1024 * 1024)).toFixed(1);
             var mbTotal = (total / (1024 * 1024)).toFixed(1);
             status.textContent = 'ダウンロード中: ' + mbLoaded + 'MB / ' + mbTotal + 'MB (' + percent + '%)';
-            fill.style.width = (5 + (percent * 0.45)) + '%'; // Progress from 5% to 50%
+            fill.style.width = (5 + (percent * 0.45)) + '%';
           } else {
-            var mbLoaded = (loaded / (1024 * 1024)).toFixed(1);
             status.textContent = 'ダウンロード中: ' + mbLoaded + 'MB';
           }
           read();
@@ -936,64 +1162,78 @@ function fetchVideoAndCapture(info, fill, status) {
       }
       read();
     });
-  })
-  .then(function (blob) {
-    status.textContent = 'フレームを抽出準備中...';
-    var blobUrl = URL.createObjectURL(blob);
-    captureFramesFromBlob(blobUrl, fill, status);
-  })
-  .catch(function (err) {
-    status.textContent = 'エラー: ' + err.message;
-    var btn = document.getElementById('frame-capture-btn');
-    if (btn) { btn.disabled = false; btn.textContent = '🎬 再試行'; }
   });
 }
 
-function captureFramesFromBlob(blobUrl, fill, status) {
+// 先頭だけでは再生できない動画 (moov が末尾の MP4 など) は全体取得にフォールバックする
+function fallbackToFullCapture_(source, status) {
+  appState.captureSource = null;
+  status.textContent = 'この動画は先頭だけでは読めないため、全体をダウンロードします...';
+  startFrameCapture(source.fileId, true);
+}
+
+function captureFramesFromSource(source, fill, status) {
+  var blobUrl = URL.createObjectURL(source.blob);
   var video = document.createElement('video');
   video.muted = true;
   video.preload = 'auto';
+  var started = false;
 
   video.addEventListener('error', function () {
+    if (started) return; // シーク中のエラーはフレーム単位でスキップする
     URL.revokeObjectURL(blobUrl);
-    status.textContent = 'この動画形式はフレームキャプチャに対応していません';
-    var btn = document.getElementById('frame-capture-btn');
-    if (btn) { btn.disabled = false; btn.textContent = '🎬 再試行'; }
+    if (!source.complete) {
+      fallbackToFullCapture_(source, status);
+    } else {
+      showCaptureError_(status, 'この動画形式はフレームキャプチャに対応していません');
+    }
   });
 
   video.addEventListener('loadedmetadata', function () {
     var duration = video.duration;
     if (!duration || !isFinite(duration)) {
-      status.textContent = '動画の長さを取得できません';
       URL.revokeObjectURL(blobUrl);
+      if (!source.complete) {
+        fallbackToFullCapture_(source, status);
+      } else {
+        showCaptureError_(status, '動画の長さを取得できません');
+      }
       return;
     }
+    started = true;
 
     status.textContent = 'フレームを抽出中...';
     fill.style.width = '50%';
 
-    // Generate 10 random timestamps (5%~95% of duration)
+    // 取得済みの範囲 (ビットレート一定と仮定した概算) からランダムに10点選ぶ
+    var hi = source.complete ? 0.95 : Math.min(0.95, source.fraction * 0.85);
+    var lo = source.complete ? 0.05 : hi * 0.05;
     var timestamps = [];
     for (var i = 0; i < 10; i++) {
-      var t = duration * (0.05 + Math.random() * 0.9);
-      timestamps.push(t);
+      timestamps.push(duration * (lo + Math.random() * (hi - lo)));
     }
     timestamps.sort(function (a, b) { return a - b; });
 
-    captureFramesSequentially(video, timestamps, 0, [], fill, status, blobUrl);
+    captureFramesSequentially(video, timestamps, 0, [], fill, status, function (frames) {
+      URL.revokeObjectURL(blobUrl);
+      if (frames.length === 0 && !source.complete) {
+        fallbackToFullCapture_(source, status);
+        return;
+      }
+      fill.style.width = '100%';
+      status.textContent = '完了！ ' + frames.length + ' フレームを抽出しました' +
+        (source.complete ? '' : '（動画の冒頭から）');
+      displayCapturedFrames(frames, source);
+    });
   });
 
   video.src = blobUrl;
   video.load();
 }
 
-function captureFramesSequentially(video, timestamps, idx, frames, fill, status, blobUrl) {
+function captureFramesSequentially(video, timestamps, idx, frames, fill, status, done) {
   if (idx >= timestamps.length) {
-    // All frames captured
-    URL.revokeObjectURL(blobUrl); // Free memory
-    fill.style.width = '100%';
-    status.textContent = '完了！ ' + frames.length + ' フレームを抽出しました';
-    displayCapturedFrames(frames);
+    done(frames);
     return;
   }
 
@@ -1001,11 +1241,18 @@ function captureFramesSequentially(video, timestamps, idx, frames, fill, status,
   fill.style.width = progress + '%';
   status.textContent = 'フレーム ' + (idx + 1) + ' / ' + timestamps.length + ' を抽出中...';
 
-  video.currentTime = timestamps[idx];
-
-  video.addEventListener('seeked', function onSeeked() {
+  var finished = false;
+  function next() {
+    if (finished) return;
+    finished = true;
+    clearTimeout(timer);
     video.removeEventListener('seeked', onSeeked);
+    captureFramesSequentially(video, timestamps, idx + 1, frames, fill, status, done);
+  }
+  // 取得範囲外へのシークなどで seeked が来ない場合はそのフレームを諦める
+  var timer = setTimeout(next, CAPTURE_SEEK_TIMEOUT_MS);
 
+  function onSeeked() {
     try {
       var canvas = document.createElement('canvas');
       var targetWidth = Math.min(video.videoWidth, 320); // Resize to 320px width for 10KB size limit
@@ -1032,16 +1279,14 @@ function captureFramesSequentially(video, timestamps, idx, frames, fill, status,
         dataUrl = canvas.toDataURL('image/jpeg', 0.4);
       }
 
-      var timeLabel = formatTime(timestamps[idx]);
-
-      frames.push({ url: dataUrl, time: timeLabel });
+      frames.push({ url: dataUrl, time: formatTime(timestamps[idx]) });
     } catch (e) {
       console.warn('Frame capture failed at ' + timestamps[idx] + ': ' + e.message);
     }
-
-    // Next frame
-    captureFramesSequentially(video, timestamps, idx + 1, frames, fill, status, blobUrl);
-  });
+    next();
+  }
+  video.addEventListener('seeked', onSeeked);
+  video.currentTime = timestamps[idx];
 }
 
 function formatTime(seconds) {
@@ -1050,9 +1295,15 @@ function formatTime(seconds) {
   return m + ':' + (s < 10 ? '0' : '') + s;
 }
 
-function displayCapturedFrames(frames) {
+function displayCapturedFrames(frames, source) {
   var grid = document.getElementById('frame-capture-grid');
-  if (!grid || frames.length === 0) return;
+  if (!grid) return;
+  setCaptureBusy_(false);
+  var btn = document.getElementById('frame-capture-btn');
+  if (btn) btn.textContent = '🎬 再キャプチャ（別の10フレーム）';
+  var fullBtn = document.getElementById('frame-capture-full-btn');
+  if (fullBtn) fullBtn.style.display = source.complete ? 'none' : '';
+  if (frames.length === 0) return;
 
   var body = document.getElementById('thumb-editor-body');
   var html = '';
@@ -1064,9 +1315,6 @@ function displayCapturedFrames(frames) {
   grid.innerHTML = html;
 
   bindThumbOptionClicks(body);
-
-  var btn = document.getElementById('frame-capture-btn');
-  if (btn) { btn.disabled = false; btn.textContent = '🎬 再キャプチャ（別の10フレーム）'; }
 }
 
 function saveThumbEditor() {
@@ -1075,31 +1323,23 @@ function saveThumbEditor() {
   var targetId = appState.thumbEditorTarget.targetId;
   var url = appState.thumbEditorSelected;
 
-  // Optimistic Update (Immediate UI Reflection using Base64 dataURL)
+  // Optimistic Update
   var item = appState.allContent.find(function (c) { return c.targetId === targetId; });
   if (item) item.thumbnailUrl = url;
 
-  // Directly update only the affected card to avoid heavy full-grid re-render
-  var cardIdx = appState.filteredContent.findIndex(function (c) { return c.targetId === targetId; });
-  if (cardIdx !== -1) {
-    var cardEl = document.querySelector('.card[data-index="' + cardIdx + '"]');
-    if (cardEl) {
-      var imgEl = cardEl.querySelector('.card-thumb img');
-      if (imgEl) {
-        imgEl.src = escapeHtml(url);
-        imgEl.style.display = ''; // Reset display in case it was hidden by onerror
-      }
+  var cardEl = document.querySelector('.card[data-target="' + cssEscape(targetId) + '"]');
+  if (cardEl) {
+    var imgEl = cardEl.querySelector('.card-thumb img');
+    if (imgEl) {
+      imgEl.src = url;
+      imgEl.style.display = '';
     }
   }
 
   closeThumbEditor();
+  invalidateContentCache();
 
-  // Save to backend
-  // Save to backend directly to spreadsheet (both Base64 data and normal URLs)
   google.script.run
-    .withSuccessHandler(function () {
-      console.log('Thumbnail successfully saved: ' + targetId);
-    })
     .withFailureHandler(onError)
     .updateThumbnail(targetId, url);
 }
@@ -1108,7 +1348,7 @@ function saveThumbEditor() {
 // Utilities
 // ============================================================
 
-// #7: Pure string replacement instead of DOM-based escaping
+// Pure string replacement HTML escape
 function escapeHtml(str) {
   if (!str) return '';
   return String(str)
@@ -1117,6 +1357,19 @@ function escapeHtml(str) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+// CSS セレクター用に属性値をエスケープ（querySelector に data-target を埋め込むため）
+function cssEscape(str) {
+  if (window.CSS && CSS.escape) return CSS.escape(str);
+  return String(str).replace(/(["\\\]])/g, '\\$1');
+}
+
+// 楽観更新後に呼ぶ。手元の最新状態をキャッシュし（版数は不明なので次回は全件取得）、
+// 本セッション内の以後のサーバ応答による上書きを抑止する
+function invalidateContentCache() {
+  appState.hasLocalMutations = true;
+  ContentCache.write(null, appState.allContent);
 }
 
 function hideLoading() {
