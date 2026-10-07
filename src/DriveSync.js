@@ -207,7 +207,7 @@ function listChangedItems_(query, fields, lastSync, startTime, config, toItem) {
 function syncVideoFolder_(folderId, lastSync, startTime, config) {
   return listChangedItems_(
     buildRootQuery_('Video', folderId, config),
-    'id,name,description,thumbnailLink,webViewLink',
+    'id,name,description,webViewLink',
     lastSync, startTime, config,
     function (file) {
       return {
@@ -215,7 +215,7 @@ function syncVideoFolder_(folderId, lastSync, startTime, config) {
         type: 'Video',
         title: file.name || '',
         tags: file.description || '',
-        thumbnailUrl: resizeThumbnail_(file.thumbnailLink, config.THUMB_SIZE_GRID),
+        thumbnailUrl: driveThumbnailUrl_(file.id, config.THUMB_WIDTH_GRID),
         webViewUrl: file.webViewLink || ''
       };
     }
@@ -297,10 +297,10 @@ function pruneDeletedContent_(roots, startTime, config) {
 }
 
 /**
- * 漫画フォルダの先頭画像のサムネイルを取得する。
+ * 漫画フォルダの先頭画像のサムネイルURLを取得する。
  * @param {string} folderId フォルダID
  * @param {Object} config 設定
- * @returns {string} サムネイルURL
+ * @returns {string} サムネイルURL（画像が無い場合は空文字）
  */
 function getMangaFirstThumbnail_(folderId, config) {
   try {
@@ -310,7 +310,7 @@ function getMangaFirstThumbnail_(folderId, config) {
 
     var response = Drive.Files.list({
       q: "(" + mimeQuery + ") and '" + folderId + "' in parents and trashed=false",
-      fields: 'files(id,thumbnailLink)',
+      fields: 'files(id)',
       pageSize: 1,
       orderBy: 'name',
       supportsAllDrives: true,
@@ -318,18 +318,23 @@ function getMangaFirstThumbnail_(folderId, config) {
     });
 
     if (response.files && response.files.length > 0) {
-      var file = response.files[0];
-      // Use thumbnailLink with custom size if available
-      if (file.thumbnailLink) {
-        return resizeThumbnail_(file.thumbnailLink, config.THUMB_SIZE_GRID);
-      }
-      // Fallback: construct a direct thumbnail URL from file ID
-      return 'https://drive.google.com/thumbnail?id=' + file.id + '&sz=w400';
+      return driveThumbnailUrl_(response.files[0].id, config.THUMB_WIDTH_GRID);
     }
   } catch (e) {
     Logger.log('Failed to get manga thumbnail for ' + folderId + ': ' + e.message);
   }
   return '';
+}
+
+/**
+ * ファイルIDから失効しないサムネイルURLを組み立てる。
+ * Drive API の thumbnailLink は数時間で失効する短命URLのため、シートには保存しない。
+ * @param {string} fileId
+ * @param {number} width 幅(px)
+ * @returns {string}
+ */
+function driveThumbnailUrl_(fileId, width) {
+  return 'https://drive.google.com/thumbnail?id=' + encodeURIComponent(fileId) + '&sz=w' + width;
 }
 
 /**

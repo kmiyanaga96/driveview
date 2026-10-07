@@ -29,7 +29,8 @@ function getConfig() {
     CHAPTERS_SHEET: 'Chapters',
 
     // ===== サムネイル =====
-    THUMB_SIZE_GRID: 'w400-rw',
+    // 一覧サムネイルの幅(px)。シートには失効しない drive.google.com/thumbnail 形式で保存する
+    THUMB_WIDTH_GRID: 400,
     THUMB_SIZE_READER: 'w1200-rw',
 
     // ===== 対応拡張子 =====

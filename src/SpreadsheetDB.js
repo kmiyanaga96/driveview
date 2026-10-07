@@ -163,7 +163,7 @@ function dbBatchUpsertContent(items) {
       if (existingTags) values[3] = existingTags;
 
       // ユーザーが設定した Base64 サムネイルは同期で上書きしない
-      // (同期が返すのは Drive の thumbnailLink / フォールバックURL のみ)
+      // (同期が返すのは drive.google.com/thumbnail 形式のURLのみ)
       var existingThumb = current[4] ? String(current[4]) : '';
       if (existingThumb.indexOf('data:') === 0 &&
           String(values[4] || '').indexOf('data:') !== 0) {
