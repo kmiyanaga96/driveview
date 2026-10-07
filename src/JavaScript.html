@@ -30,6 +30,74 @@ var appState = {
   hasLocalMutations: false
 };
 
+// === Tag Kinds ===
+// タグは "種別:名前" の文字列で保存する（例: "作者:山田"）。ここに無い種別名や
+// 接頭辞の無いタグは「その他」として扱う。種別を増やす場合はここに追記する。
+var TAG_KINDS = {
+  Video: ['作者', 'キャラ'],
+  Manga: ['作者', '登場キャラ', 'シチュエーション']
+};
+var TAG_KIND_OTHER = 'その他';
+
+// "種別:名前" を分解する。kindIdx は 0 = その他、1.. = TAG_KINDS の順
+function parseTag(raw, type) {
+  var i = raw.indexOf(':');
+  if (i > 0) {
+    var kinds = TAG_KINDS[type] || [];
+    var k = kinds.indexOf(raw.slice(0, i).trim());
+    if (k !== -1) {
+      return { raw: raw, kind: kinds[k], name: raw.slice(i + 1).trim(), kindIdx: k + 1 };
+    }
+  }
+  return { raw: raw, kind: '', name: raw, kindIdx: 0 };
+}
+
+function buildTag(kind, name) {
+  return kind ? kind + ':' + name : name;
+}
+
+// 全角コロン・全角英数を正規化して前後の空白を除く
+function normalizeTagInput(str) {
+  return String(str || '').normalize('NFKC').trim();
+}
+
+// 種別順（その他は最後）→ 名前順
+function compareTags(a, b) {
+  var ka = a.kindIdx || Infinity;
+  var kb = b.kindIdx || Infinity;
+  return (ka === kb ? 0 : ka < kb ? -1 : 1) || a.name.localeCompare(b.name, 'ja');
+}
+
+// 検索用の正規化（全角半角・大文字小文字を無視）
+function normalizeForSearch(str) {
+  return String(str || '').normalize('NFKC').toLowerCase();
+}
+
+// タグのパースと検索用テキストを事前計算してアイテムに保持する
+function indexItem(item) {
+  var raws = item.tags
+    ? item.tags.split(',').map(function (t) { return t.trim(); }).filter(Boolean)
+    : [];
+  item._parsedTags = raws;
+  var tags = raws.map(function (r) { return parseTag(r, item.type); }).sort(compareTags);
+  item._tagInfo = tags;
+  var text = item.title || '';
+  for (var i = 0; i < tags.length; i++) text += '\n' + tags[i].raw;
+  item._searchText = normalizeForSearch(text);
+}
+
+function renderCardTags(item) {
+  var html = '';
+  var tags = item._tagInfo || [];
+  for (var i = 0; i < tags.length; i++) {
+    var t = tags[i];
+    html += '<span class="card-tag kind-' + t.kindIdx + '"' +
+      (t.kind ? ' title="' + escapeHtml(t.kind) + '"' : '') + '>' +
+      escapeHtml(t.name) + '</span>';
+  }
+  return html;
+}
+
 // === Init ===
 document.addEventListener('DOMContentLoaded', function () {
   bindEvents();
@@ -203,13 +271,8 @@ function onContentLoaded(data, fromCache) {
   data = data || [];
   appState.allContent = data;
 
-  // タグを一度だけパースしキャッシュ
-  for (var i = 0; i < data.length; i++) {
-    var item = data[i];
-    item._parsedTags = item.tags
-      ? item.tags.split(',').map(function (t) { return t.trim(); }).filter(Boolean)
-      : [];
-  }
+  // タグと検索用テキストを一度だけ計算しキャッシュ
+  for (var i = 0; i < data.length; i++) indexItem(data[i]);
 
   extractTags();
   renderTagBar();
@@ -241,7 +304,8 @@ function extractTags() {
 // ============================================================
 
 function applyFilters() {
-  var query = appState.searchQuery.toLowerCase();
+  // 空白区切りの各語がタイトルかタグのいずれかに含まれるもの (AND)
+  var terms = normalizeForSearch(appState.searchQuery).split(/\s+/).filter(Boolean);
   var tags = appState.selectedTags;
   var hasTagFilter = tags.length > 0;
   var type = appState.selectedType;
@@ -252,7 +316,14 @@ function applyFilters() {
   for (var i = 0; i < src.length; i++) {
     var item = src[i];
     if (!typeAll && item.type !== type) continue;
-    if (query && (!item.title || item.title.toLowerCase().indexOf(query) === -1)) continue;
+    if (terms.length) {
+      var text = item._searchText || '';
+      var hit = true;
+      for (var q = 0; q < terms.length; q++) {
+        if (text.indexOf(terms[q]) === -1) { hit = false; break; }
+      }
+      if (!hit) continue;
+    }
     if (hasTagFilter) {
       var itemTags = item._parsedTags || [];
       var ok = true;
@@ -337,6 +408,16 @@ function bindEvents() {
     setTimeout(function () { hideSuggestions(); }, 200);
   });
 
+  // 種別選択（委譲）
+  document.getElementById('tag-kind-select').addEventListener('click', function (e) {
+    var btn = e.target.closest('.tag-kind-btn');
+    if (!btn) return;
+    appState.tagEditorKind = btn.dataset.kind;
+    renderTagKindSelect();
+    onTagInput();
+    tagInput.focus();
+  });
+
   // Thumb editor
   document.getElementById('thumb-editor').addEventListener('click', function (e) {
     if (e.target === this) closeThumbEditor();
@@ -383,14 +464,7 @@ function renderGallery() {
   var items = appState.filteredContent;
   for (var idx = 0; idx < items.length; idx++) {
     var item = items[idx];
-    var tagHtml = '';
-    var parsed = item._parsedTags;
-    if (parsed && parsed.length) {
-      var sorted = parsed.slice().sort(function (a, b) { return a.localeCompare(b, 'ja'); });
-      for (var t = 0; t < sorted.length; t++) {
-        tagHtml += '<span class="card-tag">' + escapeHtml(sorted[t]) + '</span>';
-      }
-    }
+    var tagHtml = renderCardTags(item);
 
     var displayTitle = item.title ? item.title.replace(TITLE_EXT_RE, '') : '';
     var delay = idx < 10 ? (idx * 0.03).toFixed(2) : '0.30';
@@ -447,15 +521,35 @@ function setupGalleryDelegation() {
   });
 }
 
+// 種別ごとにグループ化して表示（グループ内は使用数の多い順）
 function renderTagBar() {
   var bar = document.getElementById('tag-bar');
+  var type = appState.selectedType;
+  var kinds = TAG_KINDS[type] || [];
+  var groups = [];
+  for (var g = 0; g <= kinds.length; g++) groups.push([]);
+  for (var i = 0; i < appState.allTags.length; i++) {
+    var t = parseTag(appState.allTags[i], type);
+    groups[t.kindIdx].push(t);
+  }
+
   var parts = [];
   var selected = appState.selectedTags;
-  for (var i = 0; i < appState.allTags.length; i++) {
-    var tag = appState.allTags[i];
-    var active = selected.indexOf(tag) !== -1 ? ' active' : '';
-    var esc = escapeHtml(tag);
-    parts.push('<button class="tag-chip' + active + '" data-tag="' + esc + '">' + esc + '</button>');
+  var order = [];
+  for (var k = 1; k <= kinds.length; k++) order.push(k);
+  order.push(0); // その他は最後
+  for (var o = 0; o < order.length; o++) {
+    var idx = order[o];
+    var list = groups[idx];
+    if (!list.length) continue;
+    parts.push('<span class="tag-group-label kind-' + idx + '">' +
+      escapeHtml(idx ? kinds[idx - 1] : TAG_KIND_OTHER) + '</span>');
+    for (var j = 0; j < list.length; j++) {
+      var tag = list[j];
+      var active = selected.indexOf(tag.raw) !== -1 ? ' active' : '';
+      parts.push('<button class="tag-chip kind-' + idx + active + '" data-tag="' +
+        escapeHtml(tag.raw) + '">' + escapeHtml(tag.name) + '</button>');
+    }
   }
   bar.innerHTML = parts.join('');
 }
@@ -775,9 +869,9 @@ function openTagEditor(targetId) {
     ? item.tags.split(',').map(function (t) { return t.trim(); }).filter(Boolean)
     : [];
   appState.tagSuggestionIndex = -1;
+  appState.tagEditorKind = '';
 
-
-
+  renderTagKindSelect();
   renderTagEditorChips();
   document.getElementById('tag-input').value = '';
   hideSuggestions();
@@ -796,16 +890,18 @@ function saveTagEditor() {
   if (!appState.tagEditorTarget) return;
 
   var targetId = appState.tagEditorTarget.targetId;
-  var sortedTags = appState.tagEditorTags.slice().sort(function (a, b) {
-    return a.localeCompare(b, 'ja');
-  });
+  var type = appState.tagEditorTarget.type;
+  var sortedTags = appState.tagEditorTags
+    .map(function (r) { return parseTag(r, type); })
+    .sort(compareTags)
+    .map(function (t) { return t.raw; });
   var tagsStr = sortedTags.join(', ');
 
   // Optimistic Update
   var item = appState.allContent.find(function (c) { return c.targetId === targetId; });
   if (item) {
     item.tags = tagsStr;
-    item._parsedTags = sortedTags.slice();
+    indexItem(item);
   }
 
   extractTags();
@@ -815,13 +911,7 @@ function saveTagEditor() {
   var cardEl = document.querySelector('.card[data-target="' + cssEscape(targetId) + '"]');
   if (cardEl) {
     var tagsContainer = cardEl.querySelector('.card-tags');
-    if (tagsContainer) {
-      var html = '';
-      for (var i = 0; i < sortedTags.length; i++) {
-        html += '<span class="card-tag">' + escapeHtml(sortedTags[i]) + '</span>';
-      }
-      tagsContainer.innerHTML = html;
-    }
+    if (tagsContainer && item) tagsContainer.innerHTML = renderCardTags(item);
   }
 
   closeTagEditor();
@@ -830,13 +920,32 @@ function saveTagEditor() {
   saveTags(targetId, tagsStr, function () { /* background */ });
 }
 
+// 新規タグに付ける種別の選択ボタン
+function renderTagKindSelect() {
+  var container = document.getElementById('tag-kind-select');
+  var kinds = TAG_KINDS[appState.tagEditorTarget.type] || [];
+  var html = '';
+  var all = [''].concat(kinds);
+  for (var i = 0; i < all.length; i++) {
+    var k = all[i];
+    var idx = k ? i : 0;
+    var active = appState.tagEditorKind === k ? ' active' : '';
+    html += '<button class="tag-kind-btn kind-' + idx + active + '" data-kind="' + escapeHtml(k) + '">' +
+      escapeHtml(k || TAG_KIND_OTHER) + '</button>';
+  }
+  container.innerHTML = html;
+}
+
 function renderTagEditorChips() {
   var container = document.getElementById('tag-editor-chips');
+  var type = appState.tagEditorTarget ? appState.tagEditorTarget.type : '';
   var html = '';
   appState.tagEditorTags.forEach(function (tag, idx) {
+    var t = parseTag(tag, type);
     html +=
-      '<span class="tag-editor-chip">' +
-        escapeHtml(tag) +
+      '<span class="tag-editor-chip kind-' + t.kindIdx + '">' +
+        (t.kind ? '<span class="tag-kind-badge">' + escapeHtml(t.kind) + '</span>' : '') +
+        escapeHtml(t.name) +
         '<button class="tag-editor-chip-remove" data-idx="' + idx + '">✕</button>' +
       '</span>';
   });
@@ -851,8 +960,18 @@ function renderTagEditorChips() {
   });
 }
 
+// 入力値をタグ文字列にする。"種別:名前" で入力された場合はその種別、
+// そうでなければ選択中の種別を付ける
+function resolveTagInput(value) {
+  var v = normalizeTagInput(value);
+  if (!v) return '';
+  var t = parseTag(v, appState.tagEditorTarget.type);
+  if (t.kind) return t.name ? buildTag(t.kind, t.name) : '';
+  return buildTag(appState.tagEditorKind, v);
+}
+
 function addTagToEditor(tag) {
-  tag = tag.trim();
+  tag = normalizeTagInput(tag);
   if (!tag) return;
   // Prevent duplicates
   if (appState.tagEditorTags.indexOf(tag) !== -1) return;
@@ -864,8 +983,9 @@ function addTagToEditor(tag) {
 
 function onTagInput() {
   var input = document.getElementById('tag-input');
-  var query = input.value.trim().toLowerCase();
+  var query = normalizeForSearch(input.value.trim());
   var suggestions = document.getElementById('tag-suggestions');
+  var type = appState.tagEditorTarget ? appState.tagEditorTarget.type : '';
   appState.tagSuggestionIndex = -1;
 
   if (!query) {
@@ -873,24 +993,29 @@ function onTagInput() {
     return;
   }
 
-  // Filter existing tags that match query and aren't already added
+  // 既存タグを名前・種別付き表記のどちらでも部分一致で候補にする（種別は問わない）
   var matches = appState.allTags.filter(function (tag) {
-    return tag.toLowerCase().indexOf(query) !== -1 &&
+    return normalizeForSearch(tag).indexOf(query) !== -1 &&
            appState.tagEditorTags.indexOf(tag) === -1;
   }).slice(0, 8);
 
-  // Check if exact match exists
-  var exactExists = appState.allTags.some(function (t) { return t.toLowerCase() === query; });
-  var alreadyAdded = appState.tagEditorTags.some(function (t) { return t.toLowerCase() === query; });
+  var newTag = resolveTagInput(input.value);
+  var exactExists = appState.allTags.indexOf(newTag) !== -1;
+  var alreadyAdded = appState.tagEditorTags.indexOf(newTag) !== -1;
 
   var html = '';
   matches.forEach(function (tag, idx) {
-    html += '<div class="tag-suggestion-item" data-tag="' + escapeHtml(tag) + '" data-idx="' + idx + '">' + escapeHtml(tag) + '</div>';
+    var t = parseTag(tag, type);
+    html += '<div class="tag-suggestion-item" data-tag="' + escapeHtml(tag) + '" data-idx="' + idx + '">' +
+      (t.kind ? '<span class="tag-kind-badge kind-' + t.kindIdx + '">' + escapeHtml(t.kind) + '</span>' : '') +
+      escapeHtml(t.name) + '</div>';
   });
 
   // Offer to create new tag if not exact match
-  if (!exactExists && !alreadyAdded && query.length > 0) {
-    html += '<div class="tag-suggestion-item tag-suggestion-new" data-tag="' + escapeHtml(input.value.trim()) + '" data-idx="' + matches.length + '">"' + escapeHtml(input.value.trim()) + '" を新規作成</div>';
+  if (newTag && !exactExists && !alreadyAdded) {
+    var nt = parseTag(newTag, type);
+    html += '<div class="tag-suggestion-item tag-suggestion-new" data-tag="' + escapeHtml(newTag) + '" data-idx="' + matches.length + '">' +
+      '"' + escapeHtml(nt.name) + '" を' + escapeHtml(nt.kind || TAG_KIND_OTHER) + 'として新規作成</div>';
   }
 
   if (html) {
@@ -925,7 +1050,7 @@ function onTagInputKeydown(e) {
     if (appState.tagSuggestionIndex >= 0 && items[appState.tagSuggestionIndex]) {
       addTagToEditor(items[appState.tagSuggestionIndex].dataset.tag);
     } else if (e.target.value.trim()) {
-      addTagToEditor(e.target.value.trim());
+      addTagToEditor(resolveTagInput(e.target.value));
     }
   } else if (e.key === 'Tab') {
     e.preventDefault();

@@ -29,7 +29,18 @@
   --radius-xs: 4px;
   --transition: 0.15s cubic-bezier(0.4, 0, 0.2, 1);
   --font: 'Inter', 'Noto Sans JP', -apple-system, sans-serif;
+  /* タグ種別の色 (0 = その他, 1.. = TAG_KINDS の順) */
+  --kind-0: #5f6368; --kind-0-bg: rgba(95, 99, 104, 0.10);
+  --kind-1: #1a73e8; --kind-1-bg: rgba(26, 115, 232, 0.10);
+  --kind-2: #188038; --kind-2-bg: rgba(24, 128, 56, 0.10);
+  --kind-3: #9334e6; --kind-3-bg: rgba(147, 52, 230, 0.10);
+  --kind-4: #b06000; --kind-4-bg: rgba(176, 96, 0, 0.10);
 }
+.kind-0 { --kind: var(--kind-0); --kind-bg: var(--kind-0-bg); }
+.kind-1 { --kind: var(--kind-1); --kind-bg: var(--kind-1-bg); }
+.kind-2 { --kind: var(--kind-2); --kind-bg: var(--kind-2-bg); }
+.kind-3 { --kind: var(--kind-3); --kind-bg: var(--kind-3-bg); }
+.kind-4 { --kind: var(--kind-4); --kind-bg: var(--kind-4-bg); }
 
 /* === Reset === */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -170,10 +181,18 @@ img { display: block; max-width: 100%; }
 }
 .tag-chip:hover { background: var(--bg-surface-hover); color: var(--text-primary); }
 .tag-chip.active {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--kind, var(--accent));
+  border-color: var(--kind, var(--accent));
   color: #fff;
 }
+.tag-group-label {
+  align-self: center;
+  font-size: 11px; font-weight: 600;
+  color: var(--kind);
+  white-space: nowrap;
+  padding-left: 8px;
+}
+.tag-group-label:first-child { padding-left: 0; }
 
 /* === Content Type Tabs === */
 .type-tabs {
@@ -257,8 +276,8 @@ img { display: block; max-width: 100%; }
 }
 .card-tag {
   font-size: 11px; padding: 2px 8px;
-  background: rgba(108, 92, 231, 0.08);
-  color: var(--accent-hover);
+  background: var(--kind-bg, var(--kind-0-bg));
+  color: var(--kind, var(--kind-0));
   border-radius: 6px;
   font-weight: 500;
 }
@@ -538,20 +557,44 @@ img { display: block; max-width: 100%; }
 .tag-editor-chip {
   display: flex; align-items: center; gap: 4px;
   padding: 4px 10px;
-  background: var(--accent-glow);
-  border: 1px solid rgba(108, 92, 231, 0.3);
+  background: var(--kind-bg, var(--accent-glow));
+  border: 1px solid transparent;
   border-radius: 16px;
-  font-size: 13px; color: var(--accent-hover);
+  font-size: 13px; color: var(--kind, var(--accent-hover));
   animation: fadeInUp 0.2s ease;
 }
 .tag-editor-chip-remove {
   width: 18px; height: 18px;
   background: transparent; border-radius: 50%;
-  color: var(--accent-hover); font-size: 12px;
+  color: inherit; font-size: 12px;
   display: flex; align-items: center; justify-content: center;
   transition: var(--transition);
 }
 .tag-editor-chip-remove:hover { background: rgba(233, 69, 96, 0.2); color: var(--accent-red); }
+.tag-kind-select {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin-bottom: 8px;
+}
+.tag-kind-btn {
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--bg-secondary);
+  color: var(--kind);
+  font-size: 12px; font-weight: 500;
+  transition: var(--transition);
+}
+.tag-kind-btn:hover { background: var(--kind-bg); }
+.tag-kind-btn.active {
+  background: var(--kind); border-color: var(--kind); color: #fff;
+}
+.tag-kind-badge {
+  font-size: 10px; font-weight: 600;
+  padding: 1px 6px; margin-right: 6px;
+  border-radius: 8px;
+  background: var(--kind-bg, var(--kind-0-bg));
+  color: var(--kind, var(--kind-0));
+}
 .tag-input-container { position: relative; }
 .tag-input {
   width: 100%; padding: 10px 14px;
