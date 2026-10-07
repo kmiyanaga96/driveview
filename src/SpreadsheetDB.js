@@ -89,24 +89,6 @@ function getChaptersSheet_() {
   return _chaptersSheetCache;
 }
 
-/**
- * Target_ID を行番号にマップしたインデックスを返す。
- * 1列のみ読み出すことで全列読み出しのコストを避ける。
- * @returns {Object<string, number>} {targetId: sheetRow}
- */
-function buildMainIndex_() {
-  var sheet = getMainSheet_();
-  var lastRow = sheet.getLastRow();
-  if (lastRow < 2) return {};
-  var ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
-  var map = {};
-  for (var i = 0; i < ids.length; i++) {
-    var id = ids[i][0];
-    if (id) map[id] = i + 2;
-  }
-  return map;
-}
-
 // ============================================================
 // Main シート操作
 // ============================================================
@@ -146,8 +128,16 @@ function dbBatchUpsertContent(items) {
   if (!items || items.length === 0) return;
 
   var sheet = getMainSheet_();
-  var idxMap = buildMainIndex_();
   var lastRow = sheet.getLastRow();
+
+  // 既存行を1回だけ読み出し、差分判定とカスタムサムネイル保護に使う
+  var existing = lastRow >= 2
+    ? sheet.getRange(2, 1, lastRow - 1, 6).getValues()
+    : [];
+  var idxMap = {};
+  for (var r = 0; r < existing.length; r++) {
+    if (existing[r][0]) idxMap[existing[r][0]] = r;
+  }
 
   var newRows = [];
   var updatedCount = 0;
@@ -162,11 +152,32 @@ function dbBatchUpsertContent(items) {
       item.thumbnailUrl,
       item.webViewUrl
     ];
-    var row = idxMap[item.targetId];
-    if (row) {
-      sheet.getRange(row, 1, 1, 6).setValues([values]);
-      updatedCount++;
+    var idx = idxMap[item.targetId];
+    if (idx === -1) continue; // 同一バッチ内で追加済み
+    if (idx !== undefined) {
+      var current = existing[idx];
+
+      // ユーザーが設定した Base64 サムネイルは同期で上書きしない
+      // (同期が返すのは Drive の thumbnailLink / フォールバックURL のみ)
+      var existingThumb = current[4] ? String(current[4]) : '';
+      if (existingThumb.indexOf('data:') === 0 &&
+          String(values[4] || '').indexOf('data:') !== 0) {
+        values[4] = existingThumb;
+      }
+
+      var diff = false;
+      for (var col = 0; col < 6; col++) {
+        if (current[col] !== values[col]) {
+          diff = true;
+          break;
+        }
+      }
+      if (diff) {
+        sheet.getRange(idx + 2, 1, 1, 6).setValues([values]);
+        updatedCount++;
+      }
     } else {
+      idxMap[item.targetId] = -1; // 同一バッチ内の重複追加を防ぐ
       newRows.push(values);
     }
   }
