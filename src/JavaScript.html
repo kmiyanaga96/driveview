@@ -39,17 +39,59 @@ var TAG_KINDS = {
 };
 var TAG_KIND_OTHER = 'その他';
 
-// "種別:名前" を分解する。kindIdx は 0 = その他、1.. = TAG_KINDS の順
-function parseTag(raw, type) {
-  var i = raw.indexOf(':');
-  if (i > 0) {
+// 種別名の別表記（動画/漫画で名前が違う種別や略称も同じ種別として扱う）
+var TAG_KIND_ALIASES = {
+  'キャラ': ['登場キャラ', 'キャラクター'],
+  '登場キャラ': ['キャラ', 'キャラクター'],
+  'シチュエーション': ['シチュ']
+};
+
+// 種別名 → TAG_KINDS 内の位置 (type ごとに1度だけ作る)
+var _kindIndexCache = {};
+function kindIndexOf(type, name) {
+  var map = _kindIndexCache[type];
+  if (!map) {
+    map = _kindIndexCache[type] = {};
     var kinds = TAG_KINDS[type] || [];
-    var k = kinds.indexOf(raw.slice(0, i).trim());
-    if (k !== -1) {
-      return { raw: raw, kind: kinds[k], name: raw.slice(i + 1).trim(), kindIdx: k + 1 };
+    for (var i = 0; i < kinds.length; i++) {
+      map[kinds[i]] = i;
+      var aliases = TAG_KIND_ALIASES[kinds[i]] || [];
+      for (var j = 0; j < aliases.length; j++) {
+        if (!(aliases[j] in map)) map[aliases[j]] = i;
+      }
     }
   }
-  return { raw: raw, kind: '', name: raw, kindIdx: 0 };
+  return name in map ? map[name] : -1;
+}
+
+// "種別:名前" を分解する。kindIdx は 0 = その他、1.. = TAG_KINDS の順。
+// 全角コロン・前後の空白・種別名の別表記を許容し、raw は正規化した "種別:名前" にする
+function parseTag(raw, type) {
+  var v = String(raw).normalize('NFKC').trim();
+  var i = v.indexOf(':');
+  if (i > 0) {
+    var k = kindIndexOf(type, v.slice(0, i).trim());
+    var name = v.slice(i + 1).trim();
+    if (k !== -1 && name) {
+      var kind = TAG_KINDS[type][k];
+      return { raw: kind + ':' + name, kind: kind, name: name, kindIdx: k + 1 };
+    }
+  }
+  return { raw: v, kind: '', name: v, kindIdx: 0 };
+}
+
+// タグ文字列を分割する（カンマ・全角カンマ・読点・改行区切り）
+function splitTags(str, type) {
+  if (!str) return [];
+  var parts = String(str).split(/[,，、\n]/);
+  var out = [];
+  for (var i = 0; i < parts.length; i++) {
+    var p = parts[i].trim();
+    if (!p) continue;
+    var raw = parseTag(p, type).raw;
+    if (out.indexOf(raw) === -1) out.push(raw);
+  }
+  return out;
 }
 
 function buildTag(kind, name) {
@@ -75,9 +117,7 @@ function normalizeForSearch(str) {
 
 // タグのパースと検索用テキストを事前計算してアイテムに保持する
 function indexItem(item) {
-  var raws = item.tags
-    ? item.tags.split(',').map(function (t) { return t.trim(); }).filter(Boolean)
-    : [];
+  var raws = splitTags(item.tags, item.type);
   item._parsedTags = raws;
   var tags = raws.map(function (r) { return parseTag(r, item.type); }).sort(compareTags);
   item._tagInfo = tags;
@@ -1133,9 +1173,7 @@ function openTagEditor(targetId) {
   if (!item) return;
 
   appState.tagEditorTarget = item;
-  appState.tagEditorTags = item.tags
-    ? item.tags.split(',').map(function (t) { return t.trim(); }).filter(Boolean)
-    : [];
+  appState.tagEditorTags = splitTags(item.tags, item.type);
   appState.tagSuggestionIndex = -1;
   appState.tagEditorKind = '';
 
@@ -1241,6 +1279,7 @@ function resolveTagInput(value) {
 function addTagToEditor(tag) {
   tag = normalizeTagInput(tag);
   if (!tag) return;
+  tag = parseTag(tag, appState.tagEditorTarget.type).raw;
   // Prevent duplicates
   if (appState.tagEditorTags.indexOf(tag) !== -1) return;
   appState.tagEditorTags.push(tag);
