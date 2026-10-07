@@ -44,7 +44,7 @@ Google Drive内の動画ファイルや漫画フォルダを検知し、Google�
   - `syncDriveContent`: ルートフォルダごとの同期位置 (`LAST_SYNC_TIME:<folderId>`) を使った差分同期。`modifiedTime` 昇順で処理し、6分制限で中断しても次回は続きから再開する。完走時は ID のみの全件列挙で削除されたコンテンツを掃除する（列挙 0 件の種別は誤削除防止のためスキップ）。
   - `forceFullSync`: 全ルートの同期位置をリセットして再同期する（タグ・カスタムサムネイルは保持）。
 - **`MangaService.js`**: 漫画リーダー処理。
-  - `getMangaPages`: 指定フォルダ内の画像を名前順（自然順ソート）で動的取得し、高解像度URLを生成。
+  - `getMangaPages`: 指定フォルダ内の画像を名前順（自然順ソート）で取得し、失効しない高解像度URL (`sz=w1200`) を生成。ページ一覧は `CacheService` にフォルダ単位で1時間キャッシュし、同期でそのフォルダの変更を検知したら破棄する。
 - **`ChapterService.js`**: `Chapters` シートのCRUD処理。
 - **`WebApp.js`**: `doGet` エントリポイントおよびフロントエンド公開API。
   - `getAllContent(clientVersion)`: スクリプトプロパティ `CONTENT_VERSION` (Main シートへの書き込みごとに更新) とクライアントのキャッシュ版数が一致すれば `notModified` のみ返し、全件転送を省く。スプレッドシートを手動編集した場合は `refreshContentVersion()` を実行する。
@@ -61,7 +61,7 @@ Google Drive内の動画ファイルや漫画フォルダを検知し、Google�
   1. ~~サムネイルの期限切れ対策~~ (完了: 同期で失効しないURLを保存。旧データは `forceFullSync` を一度実行して移行)
   2. ~~初期ロードの転送量削減~~ (完了: データ版数 `CONTENT_VERSION` による条件付き取得)
   3. ~~クライアントキャッシュの容量対策~~ (完了: IndexedDB へ移行)
-  4. 漫画ページ一覧のサーバキャッシュ: `getMangaPages` の結果を `CacheService` にフォルダ単位で保持する。
+  4. ~~漫画ページ一覧のサーバキャッシュ~~ (完了: `CacheService` に1時間保持、同期で変更検知時に破棄)
   5. フレームキャプチャの軽量化: 現状は動画ファイル全体をダウンロードしてからフレームを切り出している。Range リクエストで必要な範囲だけ取得する。
 
 ---

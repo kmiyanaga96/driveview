@@ -237,6 +237,7 @@ function syncMangaFolder_(folderId, lastSync, startTime, config) {
     'id,name,description',
     lastSync, startTime, config,
     function (folder) {
+      invalidateMangaPagesCache_(folder.id);
       return {
         targetId: folder.id,
         type: 'Manga',
@@ -335,18 +336,6 @@ function getMangaFirstThumbnail_(folderId, config) {
  */
 function driveThumbnailUrl_(fileId, width) {
   return 'https://drive.google.com/thumbnail?id=' + encodeURIComponent(fileId) + '&sz=w' + width;
-}
-
-/**
- * サムネイルURLのサイズパラメーターを置換する。
- * 要件4.3: =s220 等を指定サイズに変更。
- * @param {string} url
- * @param {string} size 例: 's400', 's1600'
- * @returns {string}
- */
-function resizeThumbnail_(url, size) {
-  if (!url) return '';
-  return url.replace(/=s\d+$/, '=' + size);
 }
 
 /**

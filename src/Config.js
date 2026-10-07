@@ -31,7 +31,8 @@ function getConfig() {
     // ===== サムネイル =====
     // 一覧サムネイルの幅(px)。シートには失効しない drive.google.com/thumbnail 形式で保存する
     THUMB_WIDTH_GRID: 400,
-    THUMB_SIZE_READER: 'w1200-rw',
+    // 漫画リーダーのページ画像の幅(px)
+    THUMB_WIDTH_READER: 1200,
 
     // ===== 対応拡張子 =====
     VIDEO_MIMETYPES: [
