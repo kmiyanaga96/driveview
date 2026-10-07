@@ -27,7 +27,11 @@ var appState = {
   thumbEditorTarget: null,
   thumbEditorSelected: '',
   // SWR: 楽観更新が走った後はサーバの古い応答で上書きしない
-  hasLocalMutations: false
+  hasLocalMutations: false,
+  // 漫画の巻一覧を表示中のシリーズ名 (null = 通常の一覧)
+  openSeries: null,
+  // 一覧の表示単位: 作品、またはシリーズの束 { series, items }
+  galleryEntries: []
 };
 
 // === Tag Kinds ===
@@ -35,15 +39,18 @@ var appState = {
 // 接頭辞の無いタグは「その他」として扱う。種別を増やす場合はここに追記する。
 var TAG_KINDS = {
   Video: ['作者', 'キャラ'],
-  Manga: ['作者', '登場キャラ', 'シチュエーション']
+  Manga: ['作者', '登場キャラ', 'シチュエーション', 'シリーズ']
 };
+// この種別のタグを持つ漫画は一覧で1つの「束」にまとめ、巻順に並べる
+var TAG_SERIES_KIND = 'シリーズ';
 var TAG_KIND_OTHER = 'その他';
 
 // 種別名の別表記（動画/漫画で名前が違う種別や略称も同じ種別として扱う）
 var TAG_KIND_ALIASES = {
   'キャラ': ['登場キャラ', 'キャラクター'],
   '登場キャラ': ['キャラ', 'キャラクター'],
-  'シチュエーション': ['シチュ']
+  'シチュエーション': ['シチュ'],
+  'シリーズ': ['series']
 };
 
 // 種別名 → TAG_KINDS 内の位置 (type ごとに1度だけ作る)
@@ -121,6 +128,10 @@ function indexItem(item) {
   item._parsedTags = raws;
   var tags = raws.map(function (r) { return parseTag(r, item.type); }).sort(compareTags);
   item._tagInfo = tags;
+  item._series = '';
+  for (var s = 0; s < tags.length; s++) {
+    if (tags[s].kind === TAG_SERIES_KIND) { item._series = tags[s].name; break; }
+  }
   var text = item.title || '';
   for (var i = 0; i < tags.length; i++) text += '\n' + tags[i].raw;
   item._searchText = normalizeForSearch(text);
@@ -406,8 +417,63 @@ function applyFilters() {
     }
     filtered.push(item);
   }
+
+  if (appState.openSeries !== null) {
+    filtered = filtered.filter(function (it) { return it._series === appState.openSeries; });
+    filtered.sort(compareVolumes);
+  }
   appState.filteredContent = filtered;
+  appState.galleryEntries = buildGalleryEntries(filtered);
   renderGallery();
+}
+
+var _volumeCollator = window.Intl ? new Intl.Collator('ja', { numeric: true, sensitivity: 'base' }) : null;
+// 巻の並び: タイトルの自然順 (2巻 < 10巻)
+function compareVolumes(a, b) {
+  var ta = a.title || '', tb = b.title || '';
+  return _volumeCollator ? _volumeCollator.compare(ta, tb) : (ta < tb ? -1 : ta > tb ? 1 : 0);
+}
+
+// 漫画の通常一覧では同じシリーズの巻を1つの束にまとめる（最初に現れた位置に置く）
+function buildGalleryEntries(items) {
+  if (appState.selectedType !== 'Manga' || appState.openSeries !== null) {
+    return items.map(function (it) { return { item: it }; });
+  }
+  var entries = [];
+  var bundles = {};
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i];
+    if (!it._series) { entries.push({ item: it }); continue; }
+    var b = bundles[it._series];
+    if (!b) {
+      b = bundles[it._series] = { series: it._series, items: [] };
+      entries.push(b);
+    }
+    b.items.push(it);
+  }
+  for (var key in bundles) bundles[key].items.sort(compareVolumes);
+  return entries;
+}
+
+function openSeriesView(name) {
+  appState.openSeries = name;
+  applyFilters();
+  window.scrollTo(0, 0);
+}
+
+function closeSeriesView() {
+  appState.openSeries = null;
+  applyFilters();
+}
+
+// 同じシリーズの次の巻 (無ければ null)
+function getNextVolume(item) {
+  if (!item || !item._series) return null;
+  var vols = appState.allContent.filter(function (it) {
+    return it.type === 'Manga' && it._series === item._series;
+  }).sort(compareVolumes);
+  var idx = vols.indexOf(item);
+  return idx !== -1 && idx + 1 < vols.length ? vols[idx + 1] : null;
 }
 
 // ============================================================
@@ -436,6 +502,7 @@ function bindEvents() {
       
       // Reset selected tag filters when switching tabs to avoid zero results
       appState.selectedTags = [];
+      appState.openSeries = null;
       
       // Re-extract tags and re-render the tag bar for the new type
       extractTags();
@@ -526,7 +593,13 @@ function renderGallery() {
   var stats = document.getElementById('gallery-stats');
 
   grid.dataset.viewType = appState.selectedType;
-  stats.textContent = appState.filteredContent.length + ' 件のコンテンツ';
+  if (appState.openSeries !== null) {
+    stats.innerHTML = '<button class="series-back-btn">← 一覧へ</button>' +
+      '<span class="series-heading">' + escapeHtml(appState.openSeries) + '</span>' +
+      '<span>' + appState.filteredContent.length + ' 巻</span>';
+  } else {
+    stats.textContent = appState.filteredContent.length + ' 件のコンテンツ';
+  }
 
   if (galleryObserver) { galleryObserver.disconnect(); galleryObserver = null; }
   galleryRendered = 0;
@@ -546,7 +619,7 @@ function renderGallery() {
 
 function appendGalleryChunk_() {
   var grid = document.getElementById('gallery-grid');
-  var items = appState.filteredContent;
+  var items = appState.galleryEntries;
   var end = Math.min(items.length, galleryRendered + GALLERY_CHUNK);
 
   // 文字列連結のみで一括挿入。リスナーは委譲で一括処理。
@@ -574,7 +647,9 @@ function appendGalleryChunk_() {
   }
 }
 
-function renderCardHtml_(item, idx) {
+function renderCardHtml_(entry, idx) {
+  if (entry.series !== undefined) return renderBundleHtml_(entry, idx);
+  var item = entry.item;
   var displayTitle = item.title ? item.title.replace(TITLE_EXT_RE, '') : '';
   var delay = idx < 10 ? (idx * 0.03).toFixed(2) : '0';
   var targetEsc = escapeHtml(item.targetId);
@@ -594,6 +669,21 @@ function renderCardHtml_(item, idx) {
     '</div>';
 }
 
+// シリーズの束カード: 1巻目の表紙に重ねた影と巻数バッジ
+function renderBundleHtml_(entry, idx) {
+  var first = entry.items[0];
+  var delay = idx < 10 ? (idx * 0.03).toFixed(2) : '0';
+  return '<div class="card card-bundle" data-index="' + idx + '" data-target="' + escapeHtml(first.targetId) + '" data-type="Manga" style="animation-delay:' + delay + 's">' +
+      '<div class="card-thumb">' +
+        '<img src="' + escapeHtml(first.thumbnailUrl || '') + '" alt="" loading="lazy" decoding="async" onerror="this.style.display=\'none\'">' +
+        '<span class="bundle-count">' + entry.items.length + '巻</span>' +
+      '</div>' +
+      '<div class="card-body">' +
+        '<div class="card-title">' + escapeHtml(entry.series) + '</div>' +
+      '</div>' +
+    '</div>';
+}
+
 // gallery-grid 用のイベント委譲（1度だけバインド）
 function setupGalleryDelegation() {
   var grid = document.getElementById('gallery-grid');
@@ -607,6 +697,10 @@ function setupGalleryDelegation() {
     }
   }
   grid.addEventListener('pointerover', prefetchFromEvent);
+
+  document.getElementById('gallery-stats').addEventListener('click', function (e) {
+    if (e.target.closest('.series-back-btn')) closeSeriesView();
+  });
   grid.addEventListener('touchstart', prefetchFromEvent, { passive: true });
 
   grid.addEventListener('click', function (e) {
@@ -626,11 +720,18 @@ function setupGalleryDelegation() {
       return;
     }
 
+    var bundle = target.closest('.card-bundle');
+    if (bundle) {
+      var entry = appState.galleryEntries[parseInt(bundle.dataset.index, 10)];
+      if (entry && entry.series !== undefined) openSeriesView(entry.series);
+      return;
+    }
+
     if (target.closest('.card-thumb') || target.closest('.card-title')) {
       var card3 = target.closest('.card');
       if (!card3) return;
       var idx = parseInt(card3.dataset.index, 10);
-      var item = appState.filteredContent[idx];
+      var item = appState.galleryEntries[idx] && appState.galleryEntries[idx].item;
       if (!item) return;
       if (item.type === 'Video') openVideoModal(item);
       else if (item.type === 'Manga') openMangaReader(item);
@@ -713,6 +814,11 @@ function closeVideoModal() {
 // ============================================================
 
 function openMangaReader(item) {
+  // 巻の切り替えで開き直す場合に備えて、前の巻のリスナーを外す
+  removeMangaNavigation();
+  if (appState.currentItem && appState.currentItem !== item) {
+    delete readerDataCache[appState.currentItem.targetId];
+  }
   appState.currentView = 'manga';
   appState.currentItem = item;
   appState.mangaPages = [];
@@ -736,6 +842,7 @@ function openMangaReader(item) {
     img.removeAttribute('src');
   }
   pagesEl.classList.remove('page-loading');
+  pagesEl.querySelector('.manga-next-volume').hidden = true;
   document.getElementById('chapter-list').innerHTML = '';
   document.getElementById('chapter-sidebar').classList.remove('open');
 
@@ -961,10 +1068,16 @@ function ensureMangaReaderDom_() {
     '<div class="manga-tap-zone right"></div>' +
     '<button class="manga-nav-btn prev">❮</button>' +
     '<button class="manga-nav-btn next">❯</button>' +
+    '<button class="manga-next-volume" hidden></button>' +
     '<div class="manga-page-number"></div>';
 
   // 委譲: container 内の click 1つで left/right/prev/next を捌く
   container.addEventListener('click', function (e) {
+    if (e.target.closest('.manga-next-volume')) {
+      var next = getNextVolume(appState.currentItem);
+      if (next) openMangaReader(next);
+      return;
+    }
     if (e.target.closest('.manga-tap-zone.left') || e.target.closest('.manga-nav-btn.prev')) {
       mangaPagePrev();
     } else if (e.target.closest('.manga-tap-zone.right') || e.target.closest('.manga-nav-btn.next')) {
@@ -1004,6 +1117,7 @@ function renderCurrentPage() {
 
   MangaLoader.setCurrent(idx);
   showMangaPageImage_();
+  updateNextVolumeButton_();
 
   updatePageIndicator();
 }
@@ -1012,6 +1126,25 @@ function mangaPageNext() {
   if (appState.currentPageIndex < appState.mangaPages.length - 1) {
     appState.currentPageIndex++;
     renderCurrentPage();
+  } else if (appState.mangaPages.length) {
+    // 最終ページで「次へ」: 同じシリーズの次の巻を開く
+    var next = getNextVolume(appState.currentItem);
+    if (next) openMangaReader(next);
+  }
+}
+
+// 最終ページでのみ「次の巻へ」ボタンを出す
+function updateNextVolumeButton_() {
+  var btn = document.getElementById('manga-pages').querySelector('.manga-next-volume');
+  if (!btn) return;
+  var isLast = appState.mangaPages.length > 0 &&
+    appState.currentPageIndex === appState.mangaPages.length - 1;
+  var next = isLast ? getNextVolume(appState.currentItem) : null;
+  if (next) {
+    btn.textContent = '次の巻へ: ' + next.title.replace(TITLE_EXT_RE, '') + ' ▶';
+    btn.hidden = false;
+  } else {
+    btn.hidden = true;
   }
 }
 

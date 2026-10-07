@@ -270,6 +270,27 @@ img { display: block; max-width: 100%; }
   margin-bottom: 4px; line-height: 1.4;
 }
 .gallery-sentinel { grid-column: 1 / -1; height: 1px; }
+/* シリーズの束カード: 後ろに巻が重なっているように見せる */
+.card-bundle {
+  box-shadow: 6px 6px 0 -1px var(--bg-secondary), 6px 6px 0 0 var(--border),
+              12px 12px 0 -1px var(--bg-secondary), 12px 12px 0 0 var(--border);
+  margin: 0 12px 12px 0;
+}
+.bundle-count {
+  position: absolute; right: 8px; bottom: 8px;
+  padding: 2px 8px; border-radius: 10px;
+  background: rgba(32, 33, 36, 0.75); color: #fff;
+  font-size: 12px; font-weight: 600;
+}
+.gallery-stats { display: flex; align-items: center; gap: 10px; }
+.series-back-btn {
+  padding: 4px 12px; border-radius: 16px;
+  border: 1px solid var(--border); background: var(--bg-secondary);
+  color: var(--text-secondary); font-size: 13px;
+  transition: var(--transition);
+}
+.series-back-btn:hover { background: var(--bg-surface-hover); color: var(--text-primary); }
+.series-heading { font-size: 15px; font-weight: 600; color: var(--text-primary); }
 .card-tags {
   display: flex; flex-wrap: wrap; gap: 4px;
   margin-top: 6px;
@@ -412,6 +433,18 @@ img { display: block; max-width: 100%; }
   object-fit: contain;
   transition: opacity 0.2s ease;
 }
+/* 最終ページの「次の巻へ」 */
+.manga-next-volume {
+  position: absolute; left: 50%; bottom: 56px; transform: translateX(-50%);
+  z-index: 6;
+  max-width: calc(100% - 32px);
+  padding: 10px 20px; border-radius: 24px;
+  background: var(--accent); color: #fff;
+  font-size: 14px; font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+.manga-next-volume[hidden] { display: none; }
 /* ページ読み込み中のスピナー */
 .manga-pages-container.page-loading::after {
   content: '';
