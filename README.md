@@ -71,23 +71,32 @@ Google Drive内の動画ファイルや漫画フォルダを検知し、Google�
 
 ## 🛠 開発とデプロイ手順
 
-### 準備
-- Node.js >= 18
-- `clasp` のグローバルインストール (`npm install -g @google/clasp`)
-- Googleアカウントでの Google Apps Script API の有効化
+### 自動デプロイ (GitHub Actions)
+`main` に `src/` の変更が push されると、`.github/workflows/deploy-gas.yml` が `clasp push --force` で Apps Script プロジェクトへ反映し、`GAS_DEPLOYMENT_ID` のデプロイを新しいバージョンに更新する（Web アプリの URL は変わらない）。Actions タブの「Run workflow」から手動実行もできる。
 
-### コマンド
+#### 初回セットアップ（1回だけ）
+1. https://script.google.com/home/usersettings で **Google Apps Script API を ON** にする。
+2. Node.js 20 以上がある環境で clasp にログインする。手元に環境が無ければ、ブラウザで使える [Google Cloud Shell](https://shell.cloud.google.com/) でよい。
+   ```bash
+   npx @google/clasp@3 login --no-localhost
+   # 表示されたURLをブラウザで開いて許可する。最後に「localhost に接続できません」の
+   # ページになるが正常。そのアドレスバーのURL（http://localhost:8888/?code=... 全体）を貼り付ける
+   cat ~/.clasprc.json                        # 中身をコピー
+   ```
+3. GitHub リポジトリの Settings → Secrets and variables → Actions で以下を登録する。
+   - **Secrets** `CLASPRC_JSON`: 手順2でコピーした JSON 全体（Google アカウントの認証情報なので他所に貼らないこと）
+   - **Variables** `GAS_DEPLOYMENT_ID`: GAS エディタの「デプロイ」→「デプロイを管理」に表示される Web アプリのデプロイ ID（`AKfycb...`）
+4. Actions タブから「Deploy to Apps Script」を手動実行して成功を確認する。
+
+#### 注意
+- **OAuth スコープを変更した場合** (`appsscript.json` の `oauthScopes`)、自動デプロイ後に GAS エディタで任意の関数（例: `syncDriveContent`）を一度手動実行して再承認する。再承認するまで Web アプリはエラーになる。
+- **バージョン数の上限**: Apps Script は1プロジェクトあたり最大200バージョン。デプロイのたびに1つ増えるため、上限に近づいたら GAS エディタの「プロジェクトの履歴」から古いバージョンを削除する。
+- `CLASPRC_JSON` のトークンが失効した（パスワード変更・アクセス取り消し等）場合は、初回セットアップの手順2〜3をやり直す。
+
+### 手動デプロイ（ローカル環境がある場合）
 ```bash
-# 依存パッケージのインストール
-npm install
-
-# クラスプによるGoogleアカウントログイン
-clasp login
-
-# コードをGASプロジェクトに転送 (デプロイ)
-clasp push --force
+npm ci
+npx clasp login
+npx clasp push --force
+npx clasp update-deployment <デプロイID>   # 新バージョンを作成して既存デプロイを更新
 ```
-
-※ OAuth スコープを変更した後は、GASエディタで任意の関数（例: `syncDriveContent`）を一度手動実行して再承認してください。
-
-※ WebAppの実行権限が `USER_DEPLOYING` に設定されているため、変更を適用する際はGASエディタ上で必ず **「新しいデプロイ (New Deployment)」** を作成し、新しいバージョンをリリースしてください。
