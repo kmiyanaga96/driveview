@@ -157,6 +157,11 @@ function dbBatchUpsertContent(items) {
     if (idx !== undefined) {
       var current = existing[idx];
 
+      // アプリで編集したタグは同期で上書きしない
+      // (Drive の説明欄はシートにタグが無い場合の初期値としてのみ使う)
+      var existingTags = current[3] ? String(current[3]) : '';
+      if (existingTags) values[3] = existingTags;
+
       // ユーザーが設定した Base64 サムネイルは同期で上書きしない
       // (同期が返すのは Drive の thumbnailLink / フォールバックURL のみ)
       var existingThumb = current[4] ? String(current[4]) : '';
@@ -190,6 +195,38 @@ function dbBatchUpsertContent(items) {
     'dbBatchUpsertContent: updated=' + updatedCount +
     ', appended=' + newRows.length
   );
+}
+
+/**
+ * 指定種別のうち、生存IDに含まれない行を Main シートから削除する。
+ * 連続する行はまとめて deleteRows し、下から削除して行番号のずれを防ぐ。
+ * @param {Object<string, boolean>} aliveIds Drive 上に存在する Target_ID
+ * @param {Array<string>} types 削除対象とする Type ('Video' / 'Manga')
+ * @returns {number} 削除した行数
+ */
+function dbDeleteContentNotIn_(aliveIds, types) {
+  var sheet = getMainSheet_();
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return 0;
+
+  var rows = sheet.getRange(2, 1, lastRow - 1, 2).getValues();
+  var targetRows = [];
+  for (var i = 0; i < rows.length; i++) {
+    var id = rows[i][0];
+    if (id && types.indexOf(rows[i][1]) !== -1 && !aliveIds[id]) {
+      targetRows.push(i + 2);
+    }
+  }
+
+  // 下から連続区間ごとに削除
+  var end = targetRows.length - 1;
+  while (end >= 0) {
+    var start = end;
+    while (start > 0 && targetRows[start - 1] === targetRows[start] - 1) start--;
+    sheet.deleteRows(targetRows[start], end - start + 1);
+    end = start - 1;
+  }
+  return targetRows.length;
 }
 
 /**
