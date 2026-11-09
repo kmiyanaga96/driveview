@@ -12,7 +12,9 @@
  * @returns {GoogleAppsScript.HTML.HtmlOutput}
  */
 function doGet(e) {
-  return HtmlService.createTemplateFromFile('index')
+  var template = HtmlService.createTemplateFromFile('index');
+  template.buildInfo = BUILD_INFO; // Build.js (デプロイ時に書き換え)
+  return template
     .evaluate()
     .setTitle('DriveView')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no');

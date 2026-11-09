@@ -76,6 +76,8 @@ Google Drive内の動画ファイルや漫画フォルダを検知し、Google�
 ## 🛠 開発とデプロイ手順
 
 ### 自動デプロイ (GitHub Actions)
+デプロイ中のバージョンは、一覧の最下部（とロゴのツールチップ）に `build main@<コミット> <日時(JST)>` として表示される（ワークフローが push 直前に `src/Build.js` の `BUILD_INFO` を書き換える。手動 push では `build dev`）。
+
 `main` に `src/` の変更が push されると、`.github/workflows/deploy-gas.yml` が `clasp push --force` で Apps Script プロジェクトへ反映し、`GAS_DEPLOYMENT_ID` のデプロイを新しいバージョンに更新する（Web アプリの URL は変わらない）。Actions タブの「Run workflow」から手動実行もできる。
 
 #### 初回セットアップ（1回だけ）

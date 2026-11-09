@@ -45,6 +45,13 @@ jobs:
           umask 077
           printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
 
+      - name: Stamp build info
+        run: |
+          BUILD="main@${GITHUB_SHA::7} $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M')"
+          sed -i "s|^var BUILD_INFO = 'dev';|var BUILD_INFO = '${BUILD}';|" src/Build.js
+          grep -q "var BUILD_INFO = '${BUILD}';" src/Build.js || { echo "::error::src/Build.js の書き換えに失敗しました"; exit 1; }
+          echo "Build info: ${BUILD}"
+
       - name: Push code
         run: npx clasp push --force
 
