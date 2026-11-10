@@ -715,7 +715,7 @@ function renderCardHtml_(entry, idx) {
 
   return '<div class="card" data-index="' + idx + '" data-target="' + targetEsc + '" data-type="' + item.type + '" style="animation-delay:' + delay + 's">' +
       '<div class="card-thumb">' +
-        '<img src="' + escapeHtml(item.thumbnailUrl || '') + '" alt="" loading="lazy" decoding="async" onerror="this.style.display=\'none\'">' +
+        '<img src="' + escapeHtml(item.thumbnailUrl || '') + '" alt="" loading="lazy" decoding="async" onerror="onThumbError(this)">' +
       '</div>' +
       '<div class="card-body">' +
         '<div class="card-title">' + escapeHtml(displayTitle) + '</div>' +
@@ -728,13 +728,87 @@ function renderCardHtml_(entry, idx) {
     '</div>';
 }
 
+// サムネイルの読み込み失敗からの回復。スマホでは drive.google.com/thumbnail が同時要求で
+// 一時的に失敗したり、シートに残った旧形式URL (数時間で失効) が切れていたりするため、
+// 1) 少し待って再試行 → 2) サーバーで失効しない形式に作り直す → 3) それでも駄目なら隠す。
+var STABLE_THUMB_PREFIX = 'https://drive.google.com/thumbnail?';
+var thumbRepairs = {};     // targetId -> { url, waiters }
+var thumbRepairQueue = [];
+var thumbRepairActive = 0;
+
+function onThumbError(img) {
+  var card = img.closest && img.closest('.card');
+  var targetId = card && card.dataset.target;
+  var tries = Number(img.dataset.tries || 0);
+  img.dataset.tries = tries + 1;
+  var base = (img.getAttribute('src') || '').replace(/&r=\d+$/, '');
+  if (!base || !targetId || tries >= 3) { img.style.display = 'none'; return; }
+
+  var stable = base.indexOf(STABLE_THUMB_PREFIX) === 0;
+  if (tries === 0 && stable) {
+    retryThumbLater_(img, base, 1, 600);
+    return;
+  }
+  repairThumbnail_(targetId, function (url) {
+    if (!img.isConnected) return;
+    if (url && url !== base) {
+      img.src = url;
+    } else if (stable && tries < 2) {
+      retryThumbLater_(img, base, 2, 2500);
+    } else {
+      img.style.display = 'none';
+    }
+  });
+}
+
+function retryThumbLater_(img, base, n, delayMs) {
+  setTimeout(function () {
+    if (img.isConnected) img.src = base + '&r=' + n; // 同じURLだと再取得されないことがある
+  }, delayMs + Math.random() * delayMs);
+}
+
+function repairThumbnail_(targetId, callback) {
+  var entry = thumbRepairs[targetId];
+  if (entry && !entry.waiters) { callback(entry.url); return; }
+  if (entry) { entry.waiters.push(callback); return; }
+  thumbRepairs[targetId] = { url: '', waiters: [callback] };
+  thumbRepairQueue.push(targetId);
+  pumpThumbRepairs_();
+}
+
+function pumpThumbRepairs_() {
+  while (thumbRepairActive < 2 && thumbRepairQueue.length) {
+    (function (targetId) {
+      thumbRepairActive++;
+      var done = function (url) {
+        thumbRepairActive--;
+        var entry = thumbRepairs[targetId];
+        var waiters = entry.waiters;
+        entry.url = url || '';
+        entry.waiters = null;
+        if (url) {
+          appState.allContent.forEach(function (it) {
+            if (it.targetId === targetId) it.thumbnailUrl = url;
+          });
+        }
+        waiters.forEach(function (cb) { cb(entry.url); });
+        pumpThumbRepairs_();
+      };
+      google.script.run
+        .withSuccessHandler(done)
+        .withFailureHandler(function () { done(''); })
+        .repairThumbnail(targetId);
+    })(thumbRepairQueue.shift());
+  }
+}
+
 // シリーズの束カード: 1巻目の表紙に重ねた影と巻数バッジ
 function renderBundleHtml_(entry, idx) {
   var first = entry.items[0];
   var delay = idx < 10 ? (idx * 0.03).toFixed(2) : '0';
   return '<div class="card card-bundle" data-index="' + idx + '" data-target="' + escapeHtml(first.targetId) + '" data-type="Manga" style="animation-delay:' + delay + 's">' +
       '<div class="card-thumb">' +
-        '<img src="' + escapeHtml(first.thumbnailUrl || '') + '" alt="" loading="lazy" decoding="async" onerror="this.style.display=\'none\'">' +
+        '<img src="' + escapeHtml(first.thumbnailUrl || '') + '" alt="" loading="lazy" decoding="async" onerror="onThumbError(this)">' +
         '<span class="bundle-count">' + entry.items.length + '巻</span>' +
       '</div>' +
       '<div class="card-body">' +

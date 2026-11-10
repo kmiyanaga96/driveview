@@ -60,6 +60,7 @@ function syncDriveContent() {
   } else {
     if (legacyLastSync) props.deleteProperty(config.LAST_SYNC_KEY);
     pruneDeletedContent_(roots, startTime, config);
+    migrateLegacyThumbnails_(startTime, config);
   }
 
   Logger.log('Sync completed in ' + ((Date.now() - startTime) / 1000) + 's');
@@ -325,6 +326,42 @@ function getMangaFirstThumbnail_(folderId, config) {
     Logger.log('Failed to get manga thumbnail for ' + folderId + ': ' + e.message);
   }
   return '';
+}
+
+/**
+ * 旧形式 (数時間で失効する thumbnailLink) のサムネイルが残った行を、失効しない形式に置き換える。
+ * 変更の無いフォルダは差分同期で再取得されないため、ここで移行する。時間切れなら次回に続ける。
+ * カスタム (data:) サムネイルと空欄は対象外。
+ * @param {number} startTime
+ * @param {Object} config
+ */
+function migrateLegacyThumbnails_(startTime, config) {
+  var sheet = getMainSheet_();
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  var rows = sheet.getRange(2, 1, lastRow - 1, 5).getValues();
+  var stablePrefix = 'https://drive.google.com/thumbnail?';
+  var changed = 0;
+
+  for (var i = 0; i < rows.length; i++) {
+    var url = String(rows[i][4] || '');
+    if (!url || url.indexOf('data:') === 0 || url.indexOf(stablePrefix) === 0) continue;
+    if (isTimeExceeded_(startTime, config.MAX_EXEC_MS)) break;
+    var id = String(rows[i][0]);
+    var fresh = rows[i][1] === 'Manga'
+      ? getMangaFirstThumbnail_(id, config)
+      : driveThumbnailUrl_(id, config.THUMB_WIDTH_GRID);
+    if (fresh && fresh !== url) {
+      // 該当セルだけ書く（同期中のサムネイル編集を巻き戻さない）
+      sheet.getRange(i + 2, 5).setValue(fresh);
+      changed++;
+    }
+  }
+
+  if (changed > 0) {
+    bumpContentVersion_();
+    Logger.log('Migrated ' + changed + ' legacy thumbnails.');
+  }
 }
 
 /**

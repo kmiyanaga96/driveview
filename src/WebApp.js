@@ -79,6 +79,28 @@ function updateThumbnail(targetId, thumbnailUrl) {
 }
 
 /**
+ * 表示できなかったサムネイルを失効しない形式で作り直してシートに保存する。
+ * 旧形式 (数時間で失効する thumbnailLink) が残った行や、漫画の先頭画像の差し替えに対応する。
+ * カスタム (data:) サムネイルは触らない。
+ * @param {string} targetId
+ * @returns {string} 新しいサムネイルURL（作れなかった場合は空文字）
+ */
+function repairThumbnail(targetId) {
+  var sheet = getMainSheet_();
+  var row = findRowByTargetId_(sheet, targetId);
+  if (!row) return '';
+  var values = sheet.getRange(row, 1, 1, 6).getValues()[0];
+  var current = String(values[4] || '');
+  if (current.indexOf('data:') === 0) return current;
+  var config = getConfig();
+  var fresh = values[1] === 'Manga'
+    ? getMangaFirstThumbnail_(targetId, config)
+    : driveThumbnailUrl_(targetId, config.THUMB_WIDTH_GRID);
+  if (fresh && fresh !== current) dbUpdateThumbnail(targetId, fresh);
+  return fresh;
+}
+
+/**
  * 動画のアクセス情報を取得する（フレームキャプチャ用）。
  * fileSize はクライアント側で Content-Length ヘッダから取得するため
  * Drive API 呼び出しは省略する。
