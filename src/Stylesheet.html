@@ -388,7 +388,7 @@ img { display: block; max-width: 100%; }
   border-bottom: 1px solid var(--border);
   z-index: 10; flex-shrink: 0;
 }
-.manga-topbar-left { display: flex; align-items: center; gap: 12px; }
+.manga-topbar-left { display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1; }
 .manga-back-btn {
   width: 36px; height: 36px;
   background: var(--bg-surface);
@@ -399,8 +399,14 @@ img { display: block; max-width: 100%; }
   transition: var(--transition);
 }
 .manga-back-btn:hover { background: var(--bg-surface-hover); color: var(--text-primary); }
-.manga-reader-title { font-size: 15px; font-weight: 600; }
-.manga-page-indicator { font-size: 13px; color: var(--text-secondary); }
+/* 長い作品名でも上部バーが1行のまま収まるよう省略表示（全文は title 属性） */
+.manga-reader-title {
+  font-size: 15px; font-weight: 600;
+  min-width: 0; flex: 1 1 auto;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.manga-page-indicator { font-size: 13px; color: var(--text-secondary); white-space: nowrap; flex-shrink: 0; }
+.manga-back-btn { flex-shrink: 0; }
 
 .manga-topbar-right { display: flex; align-items: center; gap: 8px; }
 .manga-btn {
@@ -866,6 +872,13 @@ img { display: block; max-width: 100%; }
 
 /* Mobile responsive */
 @media (max-width: 600px) {
+  /* 漫画リーダー上部: ボタンはアイコンのみにして作品名の幅を確保 */
+  .manga-topbar { padding: 8px 12px; gap: 8px; }
+  .manga-topbar-left { gap: 8px; }
+  .manga-topbar-right { flex-shrink: 0; gap: 6px; }
+  .manga-btn { padding: 7px 10px; }
+  .manga-btn .btn-label { display: none; }
+
   /* Header: logo + tabs on row 1, search on row 2 */
   .header {
     padding: 10px 12px;

@@ -79,6 +79,15 @@ function updateThumbnail(targetId, thumbnailUrl) {
 }
 
 /**
+ * サムネイル取得用のアクセストークン（drive.readonly）。
+ * クライアントが Drive API から署名付き thumbnailLink を取得するのに使う。
+ * @returns {string}
+ */
+function getThumbnailToken() {
+  return ScriptApp.getOAuthToken();
+}
+
+/**
  * 表示できなかったサムネイルを失効しない形式で作り直してシートに保存する。
  * 旧形式 (数時間で失効する thumbnailLink) が残った行や、漫画の先頭画像の差し替えに対応する。
  * カスタム (data:) サムネイルは触らない。

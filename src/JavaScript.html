@@ -728,78 +728,117 @@ function renderCardHtml_(entry, idx) {
     '</div>';
 }
 
-// サムネイルの読み込み失敗からの回復。スマホでは drive.google.com/thumbnail が同時要求で
-// 一時的に失敗したり、シートに残った旧形式URL (数時間で失効) が切れていたりするため、
-// 1) 少し待って再試行 → 2) サーバーで失効しない形式に作り直す → 3) それでも駄目なら隠す。
-var STABLE_THUMB_PREFIX = 'https://drive.google.com/thumbnail?';
-var thumbRepairs = {};     // targetId -> { url, waiters }
-var thumbRepairQueue = [];
-var thumbRepairActive = 0;
+// サムネイルの読み込み失敗からの回復。
+// drive.google.com/thumbnail はブラウザの Google ログイン Cookie で認可されるため、
+// スマホ (Cookie が届かない/別アカウントが既定) では表示できないことがある。失敗したら
+// 1) Drive API で署名付きの thumbnailLink (lh3, Cookie 不要) を取得して差し替える
+// 2) それも駄目なら、サーバーで失効しない形式に作り直させて 1) をやり直す
+// 3) それでも駄目なら隠す
+var THUMB_ID_RE = /^https:\/\/drive\.google\.com\/thumbnail\?id=([^&]+)/;
+var THUMB_API_SIZE = 400;
+var thumbLinkCache = {};   // fileId -> Promise<string>
+var thumbRepairs = {};     // targetId -> Promise<string>
+var thumbTokenPromise = null;
+var thumbTokenTime = 0;
+var THUMB_TOKEN_TTL_MS = 45 * 60 * 1000;
+var thumbApiQueue = [];
+var thumbApiActive = 0;
 
 function onThumbError(img) {
   var card = img.closest && img.closest('.card');
   var targetId = card && card.dataset.target;
   var tries = Number(img.dataset.tries || 0);
   img.dataset.tries = tries + 1;
-  var base = (img.getAttribute('src') || '').replace(/&r=\d+$/, '');
-  if (!base || !targetId || tries >= 3) { img.style.display = 'none'; return; }
+  var src = img.getAttribute('src') || '';
+  if (!src || !targetId || tries >= 3) { hideThumb_(img); return; }
 
-  var stable = base.indexOf(STABLE_THUMB_PREFIX) === 0;
-  if (tries === 0 && stable) {
-    retryThumbLater_(img, base, 1, 600);
-    return;
-  }
-  repairThumbnail_(targetId, function (url) {
+  var m = THUMB_ID_RE.exec(src);
+  var step = (m && !img.dataset.apiTried)
+    ? fetchThumbLink_(decodeURIComponent(m[1])).then(function (link) {
+        img.dataset.apiTried = '1';
+        if (!link) throw new Error('no thumbnailLink');
+        return link;
+      })
+    : Promise.reject(new Error('skip'));
+
+  step.catch(function () {
+    // 旧形式URL・先頭画像の差し替えなど → サーバーで作り直し、その画像の thumbnailLink を使う
+    return repairThumbnail_(targetId).then(function (url) {
+      var m2 = THUMB_ID_RE.exec(url || '');
+      if (!m2 || url === src) return m2 ? fetchThumbLink_(decodeURIComponent(m2[1])) : '';
+      return url;
+    });
+  }).then(function (next) {
     if (!img.isConnected) return;
-    if (url && url !== base) {
-      img.src = url;
-    } else if (stable && tries < 2) {
-      retryThumbLater_(img, base, 2, 2500);
-    } else {
-      img.style.display = 'none';
-    }
+    if (next && next !== src) img.src = next;
+    else hideThumb_(img);
+  }, function () { if (img.isConnected) hideThumb_(img); });
+}
+
+function hideThumb_(img) { img.style.display = 'none'; }
+
+function getThumbToken_() {
+  if (!thumbTokenPromise || Date.now() - thumbTokenTime > THUMB_TOKEN_TTL_MS) {
+    thumbTokenTime = Date.now();
+    thumbTokenPromise = new Promise(function (resolve, reject) {
+      google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).getThumbnailToken();
+    });
+    thumbTokenPromise.catch(function () { thumbTokenPromise = null; });
+  }
+  return thumbTokenPromise;
+}
+
+// Drive API の同時呼び出しは4件まで
+function runThumbApi_(task) {
+  return new Promise(function (resolve, reject) {
+    thumbApiQueue.push(function () {
+      thumbApiActive++;
+      task().then(resolve, reject).then(function () {
+        thumbApiActive--;
+        pumpThumbApi_();
+      });
+    });
+    pumpThumbApi_();
   });
 }
 
-function retryThumbLater_(img, base, n, delayMs) {
-  setTimeout(function () {
-    if (img.isConnected) img.src = base + '&r=' + n; // 同じURLだと再取得されないことがある
-  }, delayMs + Math.random() * delayMs);
+function pumpThumbApi_() {
+  while (thumbApiActive < 4 && thumbApiQueue.length) thumbApiQueue.shift()();
 }
 
-function repairThumbnail_(targetId, callback) {
-  var entry = thumbRepairs[targetId];
-  if (entry && !entry.waiters) { callback(entry.url); return; }
-  if (entry) { entry.waiters.push(callback); return; }
-  thumbRepairs[targetId] = { url: '', waiters: [callback] };
-  thumbRepairQueue.push(targetId);
-  pumpThumbRepairs_();
-}
-
-function pumpThumbRepairs_() {
-  while (thumbRepairActive < 2 && thumbRepairQueue.length) {
-    (function (targetId) {
-      thumbRepairActive++;
-      var done = function (url) {
-        thumbRepairActive--;
-        var entry = thumbRepairs[targetId];
-        var waiters = entry.waiters;
-        entry.url = url || '';
-        entry.waiters = null;
-        if (url) {
-          appState.allContent.forEach(function (it) {
-            if (it.targetId === targetId) it.thumbnailUrl = url;
-          });
-        }
-        waiters.forEach(function (cb) { cb(entry.url); });
-        pumpThumbRepairs_();
-      };
-      google.script.run
-        .withSuccessHandler(done)
-        .withFailureHandler(function () { done(''); })
-        .repairThumbnail(targetId);
-    })(thumbRepairQueue.shift());
+function fetchThumbLink_(fileId) {
+  if (!thumbLinkCache[fileId]) {
+    thumbLinkCache[fileId] = getThumbToken_().then(function (token) {
+      return runThumbApi_(function () {
+        return fetch('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(fileId) +
+            '?fields=thumbnailLink&supportsAllDrives=true',
+            { headers: { 'Authorization': 'Bearer ' + token } })
+          .then(function (res) { return res.ok ? res.json() : {}; });
+      });
+    }).then(function (meta) {
+      return meta.thumbnailLink ? meta.thumbnailLink.replace(/=s\d+$/, '') + '=s' + THUMB_API_SIZE : '';
+    }).catch(function () { return ''; });
   }
+  return thumbLinkCache[fileId];
+}
+
+function repairThumbnail_(targetId) {
+  if (!thumbRepairs[targetId]) {
+    thumbRepairs[targetId] = new Promise(function (resolve) {
+      google.script.run
+        .withSuccessHandler(function (url) {
+          if (url) {
+            appState.allContent.forEach(function (it) {
+              if (it.targetId === targetId) it.thumbnailUrl = url;
+            });
+          }
+          resolve(url || '');
+        })
+        .withFailureHandler(function () { resolve(''); })
+        .repairThumbnail(targetId);
+    });
+  }
+  return thumbRepairs[targetId];
 }
 
 // シリーズの束カード: 1巻目の表紙に重ねた影と巻数バッジ
@@ -966,6 +1005,7 @@ function openMangaReader(item) {
 
   var displayTitle = item.title.replace(/\.(mp4|mkv|avi|mov|webm|zip|rar|7z|pdf)$/i, '');
   document.getElementById('manga-reader-title').textContent = displayTitle;
+  document.getElementById('manga-reader-title').title = displayTitle;
   document.getElementById('manga-page-indicator').textContent = '読み込み中...';
   // リーダーの DOM は永続化（再ビルドや多重リスナーを避ける）。
   ensureMangaReaderDom_();
