@@ -179,6 +179,7 @@ img { display: block; max-width: 100%; }
   transition: var(--transition);
   cursor: pointer;
 }
+.tag-chip { flex-shrink: 0; max-width: 14em; overflow: hidden; text-overflow: ellipsis; }
 .tag-chip:hover { background: var(--bg-surface-hover); color: var(--text-primary); }
 .tag-chip.active {
   background: var(--kind, var(--accent));
@@ -193,6 +194,7 @@ img { display: block; max-width: 100%; }
   padding-left: 8px;
 }
 .tag-group-label:first-child { padding-left: 0; }
+.tag-group-label { flex-shrink: 0; }
 
 /* === Content Type Tabs === */
 .type-tabs {
@@ -287,7 +289,8 @@ img { display: block; max-width: 100%; }
   background: rgba(32, 33, 36, 0.75); color: #fff;
   font-size: 12px; font-weight: 600;
 }
-.gallery-stats { display: flex; align-items: center; gap: 10px; }
+.gallery-stats { display: flex; align-items: center; gap: 10px; min-width: 0; white-space: nowrap; }
+.gallery-stats > * { flex-shrink: 0; }
 .series-back-btn {
   padding: 4px 12px; border-radius: 16px;
   border: 1px solid var(--border); background: var(--bg-secondary);
@@ -295,7 +298,11 @@ img { display: block; max-width: 100%; }
   transition: var(--transition);
 }
 .series-back-btn:hover { background: var(--bg-surface-hover); color: var(--text-primary); }
-.series-heading { font-size: 15px; font-weight: 600; color: var(--text-primary); }
+/* 長いシリーズ名は1行に省略（全文は title 属性） */
+.gallery-stats > .series-heading {
+  font-size: 15px; font-weight: 600; color: var(--text-primary);
+  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+}
 .card-tags {
   display: flex; flex-wrap: wrap; gap: 4px;
   margin-top: 6px;
@@ -895,10 +902,11 @@ img { display: block; max-width: 100%; }
     max-width: 100%;
   }
 
-  /* Tag bar: wrap instead of horizontal scroll */
+  /* Tag bar: 折り返さず1行で横スクロール（タグが多くても縦に伸ばさない）。右端をぼかして続きを示す */
   .tag-bar {
-    flex-wrap: wrap;
     padding: 8px 12px;
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
   }
   .tag-chip {
     padding: 5px 12px;

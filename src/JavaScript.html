@@ -654,13 +654,14 @@ function renderGallery() {
   grid.dataset.viewType = appState.selectedType;
   if (appState.openSeries !== null) {
     stats.innerHTML = '<button class="series-back-btn">← 一覧へ</button>' +
-      '<span class="series-heading">' + escapeHtml(appState.openSeries) + '</span>' +
+      '<span class="series-heading" title="' + escapeHtml(appState.openSeries) + '">' + escapeHtml(appState.openSeries) + '</span>' +
       '<span>' + appState.filteredContent.length + ' 巻</span>';
   } else {
     stats.textContent = appState.filteredContent.length + ' 件のコンテンツ';
   }
 
   if (galleryObserver) { galleryObserver.disconnect(); galleryObserver = null; }
+  if (pendingThumbObserver) pendingThumbObserver.disconnect();
   galleryRendered = 0;
 
   if (appState.filteredContent.length === 0) {
@@ -690,6 +691,7 @@ function appendGalleryChunk_() {
   if (sentinel) sentinel.remove();
   grid.insertAdjacentHTML('beforeend', parts.join(''));
   galleryRendered = end;
+  observePendingThumbs_(grid);
 
   if (galleryRendered < items.length && window.IntersectionObserver) {
     sentinel = document.createElement('div');
@@ -715,7 +717,7 @@ function renderCardHtml_(entry, idx) {
 
   return '<div class="card" data-index="' + idx + '" data-target="' + targetEsc + '" data-type="' + item.type + '" style="animation-delay:' + delay + 's">' +
       '<div class="card-thumb">' +
-        '<img src="' + escapeHtml(item.thumbnailUrl || '') + '" alt="" loading="lazy" decoding="async" onerror="onThumbError(this)">' +
+        thumbImgHtml_(item.thumbnailUrl) +
       '</div>' +
       '<div class="card-body">' +
         '<div class="card-title">' + escapeHtml(displayTitle) + '</div>' +
@@ -752,11 +754,15 @@ function onThumbError(img) {
   var src = img.getAttribute('src') || '';
   if (!src || !targetId || tries >= 3) { hideThumb_(img); return; }
 
-  var m = THUMB_ID_RE.exec(src);
+  var orig = img.dataset.orig || src;
+  var m = THUMB_ID_RE.exec(orig);
+  if (m) forgetStoredThumbLink_(decodeURIComponent(m[1])); // 保存済みの署名付きURLが失効した場合
   var step = (m && !img.dataset.apiTried)
     ? fetchThumbLink_(decodeURIComponent(m[1])).then(function (link) {
         img.dataset.apiTried = '1';
         if (!link) throw new Error('no thumbnailLink');
+        // 通常のURLが失敗し署名付きURLで取れた端末 → 以後は最初から署名付きURLを使う
+        if (THUMB_ID_RE.test(src)) setThumbViaApi_();
         return link;
       })
     : Promise.reject(new Error('skip'));
@@ -765,7 +771,7 @@ function onThumbError(img) {
     // 旧形式URL・先頭画像の差し替えなど → サーバーで作り直し、その画像の thumbnailLink を使う
     return repairThumbnail_(targetId).then(function (url) {
       var m2 = THUMB_ID_RE.exec(url || '');
-      if (!m2 || url === src) return m2 ? fetchThumbLink_(decodeURIComponent(m2[1])) : '';
+      if (!m2 || url === orig) return m2 ? fetchThumbLink_(decodeURIComponent(m2[1])) : '';
       return url;
     });
   }).then(function (next) {
@@ -816,10 +822,116 @@ function fetchThumbLink_(fileId) {
           .then(function (res) { return res.ok ? res.json() : {}; });
       });
     }).then(function (meta) {
-      return meta.thumbnailLink ? meta.thumbnailLink.replace(/=s\d+$/, '') + '=s' + THUMB_API_SIZE : '';
+      var link = meta.thumbnailLink ? meta.thumbnailLink.replace(/=s\d+$/, '') + '=s' + THUMB_API_SIZE : '';
+      if (link) storeThumbLink_(fileId, link);
+      return link;
     }).catch(function () { return ''; });
   }
   return thumbLinkCache[fileId];
+}
+
+// --- 署名付きURLを最初から使う端末向け ---
+// 判定と取得済みURLは localStorage に保持する（署名付きURLは数時間で失効するので1時間で捨てる）
+var THUMB_API_FLAG_KEY = 'dv_thumb_via_api';
+var THUMB_LINKS_KEY = 'dv_thumb_links';
+var THUMB_LINK_TTL_MS = 60 * 60 * 1000;
+var thumbViaApi = null;
+var storedThumbLinks = null;
+var storedThumbLinksTimer = null;
+var pendingThumbObserver = null;
+
+function thumbViaApi_() {
+  if (thumbViaApi === null) {
+    try { thumbViaApi = localStorage.getItem(THUMB_API_FLAG_KEY) === '1'; } catch (e) { thumbViaApi = false; }
+  }
+  return thumbViaApi;
+}
+
+function setThumbViaApi_() {
+  if (thumbViaApi) return;
+  thumbViaApi = true;
+  try { localStorage.setItem(THUMB_API_FLAG_KEY, '1'); } catch (e) {}
+}
+
+function loadStoredThumbLinks_() {
+  if (storedThumbLinks) return storedThumbLinks;
+  storedThumbLinks = {};
+  try {
+    var raw = JSON.parse(localStorage.getItem(THUMB_LINKS_KEY) || '{}');
+    var now = Date.now();
+    for (var id in raw) {
+      if (raw[id] && now - raw[id][1] < THUMB_LINK_TTL_MS) storedThumbLinks[id] = raw[id];
+    }
+  } catch (e) {}
+  return storedThumbLinks;
+}
+
+function storedThumbLink_(fileId) {
+  var e = loadStoredThumbLinks_()[fileId];
+  return e && Date.now() - e[1] < THUMB_LINK_TTL_MS ? e[0] : '';
+}
+
+function saveStoredThumbLinksSoon_() {
+  if (storedThumbLinksTimer) return;
+  storedThumbLinksTimer = setTimeout(function () {
+    storedThumbLinksTimer = null;
+    try { localStorage.setItem(THUMB_LINKS_KEY, JSON.stringify(storedThumbLinks)); } catch (e) {}
+  }, 1000);
+}
+
+function storeThumbLink_(fileId, link) {
+  loadStoredThumbLinks_()[fileId] = [link, Date.now()];
+  saveStoredThumbLinksSoon_();
+}
+
+function forgetStoredThumbLink_(fileId) {
+  var links = loadStoredThumbLinks_();
+  if (links[fileId]) { delete links[fileId]; saveStoredThumbLinksSoon_(); }
+}
+
+// カードのサムネイル <img>。署名付きURLを使う端末では、保存済みならそれを、
+// 無ければ src 無しで出して、画面に近づいた時点で取得する
+function thumbImgHtml_(url) {
+  url = url || '';
+  var attrs = ' alt="" loading="lazy" decoding="async" onerror="onThumbError(this)"';
+  var m = THUMB_ID_RE.exec(url);
+  if (m && thumbViaApi_()) {
+    var id = decodeURIComponent(m[1]);
+    var link = storedThumbLink_(id);
+    var common = ' data-orig="' + escapeHtml(url) + '"' + attrs;
+    return link
+      ? '<img src="' + escapeHtml(link) + '"' + common + '>'
+      : '<img data-thumb-id="' + escapeHtml(id) + '"' + common + '>';
+  }
+  return '<img src="' + escapeHtml(url) + '"' + attrs + '>';
+}
+
+function observePendingThumbs_(root) {
+  var imgs = root.querySelectorAll('img[data-thumb-id]:not([src])');
+  if (!imgs.length) return;
+  if (!window.IntersectionObserver) {
+    imgs.forEach(loadPendingThumb_);
+    return;
+  }
+  if (!pendingThumbObserver) {
+    pendingThumbObserver = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (!en.isIntersecting) return;
+        pendingThumbObserver.unobserve(en.target);
+        loadPendingThumb_(en.target);
+      });
+    }, { rootMargin: '600px 0px' });
+  }
+  imgs.forEach(function (img) { pendingThumbObserver.observe(img); });
+}
+
+function loadPendingThumb_(img) {
+  fetchThumbLink_(img.dataset.thumbId).then(function (link) {
+    if (!img.isConnected) return;
+    img.dataset.apiTried = '1';
+    // 取れなければ通常のURLで試し、失敗時は onThumbError の回復処理に任せる
+    img.src = link || img.dataset.orig;
+  });
 }
 
 function repairThumbnail_(targetId) {
@@ -847,7 +959,7 @@ function renderBundleHtml_(entry, idx) {
   var delay = idx < 10 ? (idx * 0.03).toFixed(2) : '0';
   return '<div class="card card-bundle" data-index="' + idx + '" data-target="' + escapeHtml(first.targetId) + '" data-type="Manga" style="animation-delay:' + delay + 's">' +
       '<div class="card-thumb">' +
-        '<img src="' + escapeHtml(first.thumbnailUrl || '') + '" alt="" loading="lazy" decoding="async" onerror="onThumbError(this)">' +
+        thumbImgHtml_(first.thumbnailUrl) +
         '<span class="bundle-count">' + entry.items.length + '巻</span>' +
       '</div>' +
       '<div class="card-body">' +
@@ -944,7 +1056,7 @@ function renderTagBar() {
       var tag = list[j];
       var active = selected.indexOf(tag.raw) !== -1 ? ' active' : '';
       parts.push('<button class="tag-chip kind-' + idx + active + '" data-tag="' +
-        escapeHtml(tag.raw) + '">' + escapeHtml(tag.name) + '</button>');
+        escapeHtml(tag.raw) + '" title="' + escapeHtml(tag.name) + '">' + escapeHtml(tag.name) + '</button>');
     }
   }
   bar.innerHTML = parts.join('');
