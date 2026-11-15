@@ -47,6 +47,8 @@ var TAG_SERIES_KIND = 'シリーズ';
 var TAG_AUTHOR_KIND = '作者';
 // "諫山創(いさやま)" → 名前と読み (読みはひらがな/カタカナのみ。NFKC 後なので括弧は半角)
 var AUTHOR_READING_RE = /^(.+?)\(([ぁ-ゖァ-ヺー・\s]+)\)$/;
+// シリーズは "名前(巻番号)" で並び順を指定できる（例: "シリーズ:〇〇(3)"）
+var SERIES_ORDER_RE = /^(.+?)\(\s*(\d+(?:\.\d+)?)\s*\)$/;
 var TAG_KIND_OTHER = 'その他';
 
 // 種別名の別表記（動画/漫画で名前が違う種別や略称も同じ種別として扱う）
@@ -85,7 +87,7 @@ function parseTag(raw, type) {
     var name = v.slice(i + 1).trim();
     if (k !== -1 && name) {
       var kind = TAG_KINDS[type][k];
-      var t = { raw: kind + ':' + name, kind: kind, name: name, kindIdx: k + 1, reading: '' };
+      var t = { raw: kind + ':' + name, key: '', kind: kind, name: name, kindIdx: k + 1, reading: '', order: null };
       // 作者は "名前(よみ)" で読みを添えられる。読みは表示せず並び替え (五十音順) に使う
       if (kind === TAG_AUTHOR_KIND) {
         var m = AUTHOR_READING_RE.exec(name);
@@ -94,10 +96,17 @@ function parseTag(raw, type) {
         if (!t.reading && authorReadings[t.name]) t.reading = authorReadings[t.name];
         if (t.reading) t.raw = kind + ':' + t.name + '(' + t.reading + ')';
       }
+      // シリーズの巻番号は表示・絞り込みには使わず、巻の並び順にだけ使う
+      if (kind === TAG_SERIES_KIND) {
+        var so = SERIES_ORDER_RE.exec(name);
+        if (so) { t.name = so[1].trim(); t.order = parseFloat(so[2]); t.raw = kind + ':' + t.name + '(' + so[2] + ')'; }
+      }
+      // 絞り込み・タグバー用のキー（巻番号を除いた表記）
+      t.key = t.order === null ? t.raw : kind + ':' + t.name;
       return t;
     }
   }
-  return { raw: v, kind: '', name: v, kindIdx: 0, reading: '' };
+  return { raw: v, key: v, kind: '', name: v, kindIdx: 0, reading: '', order: null };
 }
 
 // 作者名 → 読み。どこか1つの作品で読みが付いていれば全作品で共有する
@@ -157,13 +166,18 @@ function normalizeForSearch(str) {
 // タグのパースと検索用テキストを事前計算してアイテムに保持する
 function indexItem(item) {
   var raws = splitTags(item.tags, item.type);
-  item._parsedTags = raws;
   var tags = raws.map(function (r) { return parseTag(r, item.type); }).sort(compareTags);
+  // 絞り込み・タグ集計用（シリーズの巻番号は除く）
+  item._parsedTags = tags.map(function (t) { return t.key; });
   item._tagInfo = tags;
   item._series = '';
+  item._seriesOrder = null;
   item._authorKey = '';
   for (var s = 0; s < tags.length; s++) {
-    if (tags[s].kind === TAG_SERIES_KIND && !item._series) item._series = tags[s].name;
+    if (tags[s].kind === TAG_SERIES_KIND && !item._series) {
+      item._series = tags[s].name;
+      item._seriesOrder = tags[s].order;
+    }
     if (tags[s].kind === TAG_AUTHOR_KIND && !item._authorKey) {
       item._authorKey = toHiragana(tags[s].reading || tags[s].name);
     }
@@ -171,6 +185,56 @@ function indexItem(item) {
   var text = item.title || '';
   for (var i = 0; i < tags.length; i++) text += '\n' + tags[i].raw;
   item._searchText = normalizeForSearch(text);
+  item._volumeOrder = item._seriesOrder !== null ? item._seriesOrder : detectVolumeOrder_(item.title);
+}
+
+// タイトルから巻の順番を読み取る（上・中・下、前編・後編、序・破・急、漢数字、ローマ数字、数字）。
+// 区切り（空白・括弧など）に挟まれた語のうち最後のものを使う。読み取れなければ null
+var VOLUME_WORDS = { '上': 1, '中': 2, '下': 3, '前': 1, '後': 3, '序': 1, '破': 2, '急': 3 };
+var VOLUME_TOKEN_RE = new RegExp(
+  '(?:^|[\\s()\\[\\]【】「」『』〈〉《》・_\\-~〜.#]|第)' +
+  '(上|中|下|前|後|序|破|急|[〇一二三四五六七八九十百]+|[IVX]+|\\d+(?:\\.\\d+)?)' +
+  '(?:巻|編|篇|部|章|話|集)?' +
+  '(?=$|[\\s()\\[\\]【】「」『』〈〉《》・_\\-~〜])', 'g');
+
+function detectVolumeOrder_(title) {
+  var t = String(title || '').replace(TITLE_EXT_RE, '').normalize('NFKC').trim();
+  var m, last = null;
+  VOLUME_TOKEN_RE.lastIndex = 0;
+  while ((m = VOLUME_TOKEN_RE.exec(t))) {
+    last = m[1];
+    VOLUME_TOKEN_RE.lastIndex = m.index + m[0].length;
+  }
+  if (last === null) return null;
+  if (VOLUME_WORDS[last]) return VOLUME_WORDS[last];
+  if (/^\d/.test(last)) return parseFloat(last);
+  if (/^[IVX]+$/.test(last)) return romanToInt_(last);
+  return kanjiToInt_(last);
+}
+
+function romanToInt_(s) {
+  var v = { I: 1, V: 5, X: 10 }, n = 0;
+  for (var i = 0; i < s.length; i++) {
+    var c = v[s[i]], next = v[s[i + 1]] || 0;
+    n += c < next ? -c : c;
+  }
+  return n || null;
+}
+
+function kanjiToInt_(s) {
+  var digits = { '〇': 0, '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9 };
+  var n = 0, cur = 0, seenUnit = false;
+  for (var i = 0; i < s.length; i++) {
+    var c = s[i];
+    if (c === '百' || c === '十') {
+      n += (cur || 1) * (c === '百' ? 100 : 10);
+      cur = 0; seenUnit = true;
+    } else {
+      cur = seenUnit || !cur ? digits[c] : cur * 10 + digits[c]; // 「二〇」のような位取り表記にも対応
+      seenUnit = false;
+    }
+  }
+  return (n + cur) || null;
 }
 
 function toHiragana(str) {
@@ -483,12 +547,20 @@ function compareByAuthor(a, b) {
     var c = _volumeCollator ? _volumeCollator.compare(ka, kb) : (ka < kb ? -1 : 1);
     if (c) return c;
   }
-  return compareVolumes(a, b);
+  return compareTitles_(a, b);
 }
-// 巻の並び: タイトルの自然順 (2巻 < 10巻)
-function compareVolumes(a, b) {
+// タイトルの自然順 (2巻 < 10巻)
+function compareTitles_(a, b) {
   var ta = a.title || '', tb = b.title || '';
   return _volumeCollator ? _volumeCollator.compare(ta, tb) : (ta < tb ? -1 : ta > tb ? 1 : 0);
+}
+// シリーズ内の巻の並び: タグの巻番号 → タイトルから読み取った順番 → タイトルの自然順。
+// 順番が分からない巻は後ろに置く
+function compareVolumes(a, b) {
+  var oa = a._volumeOrder, ob = b._volumeOrder;
+  if (oa == null) oa = Infinity;
+  if (ob == null) ob = Infinity;
+  return (oa === ob ? 0 : oa < ob ? -1 : 1) || compareTitles_(a, b);
 }
 
 // 漫画の通常一覧では同じシリーズの巻を1つの束にまとめる（最初に現れた位置に置く）
@@ -1686,7 +1758,7 @@ function renderTagEditorChips() {
     html +=
       '<span class="tag-editor-chip kind-' + t.kindIdx + '">' +
         (t.kind ? '<span class="tag-kind-badge">' + escapeHtml(t.kind) + '</span>' : '') +
-        escapeHtml(t.name) +
+        escapeHtml(t.name) + (t.order !== null ? ' (' + t.order + '巻目)' : '') +
         '<button class="tag-editor-chip-remove" data-idx="' + idx + '">✕</button>' +
       '</span>';
   });
